@@ -20,5 +20,6 @@ Speech recognition needs Chrome or Edge, and the page has to be allowed to use t
 - `index.html`: the current version. It uses `gemini-3-flash-preview` for replies and
   `gemini-2.5-flash-preview-tts` for the voice. In Gemini Canvas it uses the
   key Canvas provides.
-- `basic.html`: an earlier version. It only works inside Gemini Canvas, because it
-  expects Canvas to fill in the API key.
+- `basic.html`: an earlier version, opened at
+  https://dylan7474.github.io/AIChatBuddyHTML/basic.html. It remembers the conversation
+  and asks for the API key the same way.
