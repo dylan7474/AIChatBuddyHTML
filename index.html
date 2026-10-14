@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive AI Buddy</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* Tailwind slate-900 */
+            color: #f8fafc; /* Tailwind slate-50 */
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* --- Advanced Avatar Animations --- */
+        @keyframes float-complex {
+            0% { transform: translateY(0px) rotate(0deg); }
+            33% { transform: translateY(-12px) rotate(1deg); }
+            66% { transform: translateY(-5px) rotate(-1deg); }
+            100% { transform: translateY(0px) rotate(0deg); }
+        }
+
+        .avatar-container {
+            animation: float-complex 8s ease-in-out infinite;
+            perspective: 1000px;
+        }
+
+        /* Aura & Glows */
+        @keyframes pulse-aura {
+            0% { transform: scale(1); opacity: 0.3; }
+            50% { transform: scale(1.1); opacity: 0.6; }
+            100% { transform: scale(1); opacity: 0.3; }
+        }
+        .aura {
+            transform-origin: center;
+            animation: pulse-aura 4s ease-in-out infinite;
+            transition: fill 0.4s ease;
+        }
+
+        /* Dynamic Mouth Transition */
+        #dynamic-mouth {
+            transition: d 0.08s ease-out, fill 0.3s ease;
+        }
+
+        /* Visor Styles */
+        .visor-glass {
+            transition: all 0.4s ease;
+        }
+
+        /* State: Listening */
+        .listening .aura { fill: #10b981; animation-duration: 2s; }
+        .listening .visor-glass { stroke: #10b981; stroke-width: 3px; filter: drop-shadow(0 0 15px rgba(16,185,129,0.5)); }
+        .listening .iris-color { fill: #10b981; transition: fill 0.3s ease; }
+        .listening #dynamic-mouth { fill: #10b981; }
+        
+        /* State: Thinking */
+        @keyframes look-around {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-15px); }
+            75% { transform: translateX(15px); }
+        }
+        .thinking .eye-group { animation: look-around 2s ease-in-out infinite; }
+        .thinking .aura { fill: #8b5cf6; animation-duration: 1.5s; }
+        .thinking .visor-glass { stroke: #8b5cf6; filter: drop-shadow(0 0 15px rgba(139,92,246,0.5)); }
+        .thinking .iris-color { fill: #8b5cf6; transition: fill 0.3s ease; } 
+        .thinking #dynamic-mouth { fill: #8b5cf6; }
+        
+        /* Interactive 3D tilt applied via JS */
+        #avatar-svg {
+            transition: transform 0.1s ease-out;
+            transform-style: preserve-3d;
+        }
+
+        /* Chat scrollbar */
+        #chat-log::-webkit-scrollbar { width: 6px; }
+        #chat-log::-webkit-scrollbar-track { background: transparent; }
+        #chat-log::-webkit-scrollbar-thumb { background-color: #334155; border-radius: 20px; }
+
+        /* Status Dot */
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .status-idle { background-color: #3b82f6; box-shadow: 0 0 8px #3b82f6; }
+        .status-listening { background-color: #10b981; box-shadow: 0 0 8px #10b981; }
+        .status-speaking { background-color: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
+        .status-error { background-color: #ef4444; box-shadow: 0 0 8px #ef4444; }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-between">
+
+    <!-- Top Bar -->
+    <header class="w-full p-4 border-b border-slate-800 bg-slate-900/80 backdrop-blur-md flex justify-between items-center z-10">
+        <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-robot text-blue-400 text-xl"></i>
+            <h1 class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">Gemini AI Buddy</h1>
+        </div>
+        <div class="flex items-center text-sm font-medium text-slate-300">
+            <span id="status-indicator" class="status-dot status-idle"></span>
+            <span id="status-text">Idle</span>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 w-full max-w-4xl flex flex-col md:flex-row overflow-hidden relative">
+        
+        <!-- Avatar Section -->
+        <section class="flex-1 flex flex-col items-center justify-center p-8 min-h-[40vh]">
+            <div id="avatar" class="avatar-container w-80 h-80 relative drop-shadow-2xl z-10">
+                <svg id="avatar-svg" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" class="w-full h-full overflow-visible">
+                    <defs>
+                        <radialGradient id="aura-grad" cx="50%" cy="50%" r="50%">
+                            <stop offset="0%" stop-color="currentColor" stop-opacity="0.4" />
+                            <stop offset="100%" stop-color="currentColor" stop-opacity="0" />
+                        </radialGradient>
+                        <linearGradient id="head-base" x1="0%" y1="0%" x2="0%" y2="100%">
+                            <stop offset="0%" stop-color="#334155"/>
+                            <stop offset="100%" stop-color="#0f172a"/>
+                        </linearGradient>
+                        <linearGradient id="visor-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#020617"/>
+                            <stop offset="50%" stop-color="#0f172a"/>
+                            <stop offset="100%" stop-color="#020617"/>
+                        </linearGradient>
+                        <linearGradient id="glass-glare" x1="0%" y1="0%" x2="0%" y2="100%">
+                            <stop offset="0%" stop-color="#ffffff" stop-opacity="0.12"/>
+                            <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+                        </linearGradient>
+                    </defs>
+
+                    <!-- Background Aura -->
+                    <circle class="aura text-blue-500" cx="200" cy="200" r="180" fill="url(#aura-grad)" />
+
+                    <!-- Floating Rings (Neck/Base) -->
+                    <ellipse cx="200" cy="320" rx="70" ry="20" fill="none" stroke="#334155" stroke-width="4" />
+                    <ellipse cx="200" cy="335" rx="50" ry="15" fill="none" stroke="#475569" stroke-width="3" />
+
+                    <!-- Main Head -->
+                    <g id="robot-head">
+                        <!-- Head Shell -->
+                        <rect x="70" y="50" width="260" height="230" rx="90" fill="url(#head-base)" stroke="#475569" stroke-width="2"/>
+                        
+                        <!-- Ears/Side Nodes -->
+                        <g class="ears">
+                            <rect x="40" y="120" width="40" height="90" rx="15" fill="#1e293b" stroke="#38bdf8" stroke-width="2" />
+                            <rect x="320" y="120" width="40" height="90" rx="15" fill="#1e293b" stroke="#38bdf8" stroke-width="2" />
+                            <!-- Ear Cores -->
+                            <rect x="45" y="145" width="10" height="40" rx="5" fill="#38bdf8" />
+                            <rect x="345" y="145" width="10" height="40" rx="5" fill="#38bdf8" />
+                        </g>
+
+                        <!-- Visor Outer -->
+                        <rect class="visor-glass" x="90" y="90" width="220" height="150" rx="50" fill="url(#visor-grad)" stroke="#1e293b" stroke-width="4" />
+                        
+                        <!-- Visor Glare -->
+                        <path d="M 100 140 Q 200 90 300 140 L 300 100 Q 200 80 100 100 Z" fill="url(#glass-glare)"/>
+
+                        <!-- Face Elements (Translate dynamically for 3D effect) -->
+                        <g id="face-elements" class="eye-group">
+                            <!-- Eyes Base -->
+                            <g class="eyes-container">
+                                <!-- Left Eye -->
+                                <clipPath id="left-eye-clip">
+                                    <rect x="120" y="110" width="50" height="60" rx="25" />
+                                </clipPath>
+                                <g class="eye" style="transform-origin: 145px 140px; transition: transform 0.1s cubic-bezier(0.4, 0, 0.2, 1);">
+                                    <rect x="120" y="110" width="50" height="60" rx="25" fill="#020617" stroke="#334155" stroke-width="3"/>
+                                    <!-- Group for parallax movement -->
+                                    <g id="pupil-l-group" clip-path="url(#left-eye-clip)">
+                                        <circle class="iris-color" cx="145" cy="140" r="16" fill="#38bdf8" />
+                                        <circle cx="145" cy="140" r="8" fill="#020617" />
+                                        <circle cx="150" cy="133" r="4" fill="#ffffff" opacity="0.9" />
+                                    </g>
+                                </g>
+
+                                <!-- Right Eye -->
+                                <clipPath id="right-eye-clip">
+                                    <rect x="230" y="110" width="50" height="60" rx="25" />
+                                </clipPath>
+                                <g class="eye" style="transform-origin: 255px 140px; transition: transform 0.1s cubic-bezier(0.4, 0, 0.2, 1);">
+                                    <rect x="230" y="110" width="50" height="60" rx="25" fill="#020617" stroke="#334155" stroke-width="3"/>
+                                    <!-- Group for parallax movement -->
+                                    <g id="pupil-r-group" clip-path="url(#right-eye-clip)">
+                                        <circle class="iris-color" cx="255" cy="140" r="16" fill="#38bdf8" />
+                                        <circle cx="255" cy="140" r="8" fill="#020617" />
+                                        <circle cx="260" cy="133" r="4" fill="#ffffff" opacity="0.9" />
+                                    </g>
+                                </g>
+                            </g>
+
+                            <!-- Mouth -->
+                            <path id="dynamic-mouth" d="M 150 190 C 175 192 225 192 250 190 C 225 202 175 202 150 190 Z" fill="#38bdf8" />
+                        </g>
+                    </g>
+                </svg>
+            </div>
+            
+            <div class="mt-12 z-20">
+                <button id="mic-btn" class="group relative inline-flex items-center justify-center px-8 py-4 font-bold text-white transition-all duration-200 bg-blue-600 font-pj rounded-xl hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-600 shadow-[0_0_20px_rgba(37,99,235,0.4)] hover:shadow-[0_0_30px_rgba(37,99,235,0.6)]">
+                    <i class="fa-solid fa-microphone mr-3 text-xl group-hover:scale-110 transition-transform"></i>
+                    <span id="mic-btn-text">Tap to Speak</span>
+                </button>
+            </div>
+        </section>
+
+        <!-- Chat Log Section -->
+        <section class="flex-1 bg-slate-800/50 border-l border-slate-700/50 flex flex-col w-full h-[60vh] md:h-auto">
+            <div id="chat-log" class="flex-1 overflow-y-auto p-6 space-y-4">
+                <!-- Initial Greeting -->
+                <div class="flex items-start">
+                    <div class="bg-blue-600 text-white rounded-2xl rounded-tl-none px-5 py-3 max-w-[85%] shadow-md">
+                        Hi there! I'm your interactive AI buddy. Tap the microphone button and say something to me!
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Error Toast Notification -->
+    <div id="error-toast" class="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg flex items-center space-x-3 opacity-0 pointer-events-none transition-opacity duration-300 z-50">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <span id="error-message">An error occurred.</span>
+    </div>
+
+    <script>
+        // API Configurations
+        const API_KEY = ""; // Keep empty as requested, environment injects it
+        const LLM_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${API_KEY}`;
+        const TTS_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${API_KEY}`;
+
+        // Application State
+        let isListening = false;
+        let isSpeaking = false;
+        let chatHistory = []; // Stores context for LLM
+        
+        // Audio & Viseme Variables
+        let audioPlayer = new window.Audio();
+        let audioCtx, analyser, audioSource;
+        let visemeSequence = []; // Stores the sequence of mouth shapes for the current text
+
+        // DOM Elements
+        const avatar = document.getElementById('avatar');
+        const micBtn = document.getElementById('mic-btn');
+        const micBtnText = document.getElementById('mic-btn-text');
+        const chatLog = document.getElementById('chat-log');
+        const statusIndicator = document.getElementById('status-indicator');
+        const statusText = document.getElementById('status-text');
+        const errorToast = document.getElementById('error-toast');
+        const errorMessage = document.getElementById('error-message');
+
+        // Initialize Web Speech API
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition;
+
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = function() {
+                isListening = true;
+                updateStatus('listening');
+                avatar.classList.add('listening');
+                micBtn.classList.replace('bg-blue-600', 'bg-emerald-600');
+                micBtn.classList.replace('hover:bg-blue-500', 'hover:bg-emerald-500');
+                micBtn.classList.replace('shadow-[0_0_20px_rgba(37,99,235,0.4)]', 'shadow-[0_0_20px_rgba(16,185,129,0.4)]');
+                micBtnText.innerText = "Listening...";
+                
+                // Stop any current audio
+                if (audioPlayer && !audioPlayer.paused) {
+                    audioPlayer.pause();
+                    isSpeaking = false;
+                    avatar.classList.remove('speaking');
+                }
+            };
+
+            recognition.onresult = async function(event) {
+                const transcript = event.results[0][0].transcript;
+                handleUserUtterance(transcript);
+            };
+
+            recognition.onerror = function(event) {
+                console.error("Speech recognition error", event.error);
+                if (event.error !== 'no-speech') {
+                    showError(`Microphone error: ${event.error}`);
+                }
+                resetToIdle();
+            };
+
+            recognition.onend = function() {
+                isListening = false;
+                if (!isSpeaking && statusText.innerText !== 'Thinking...') {
+                    resetToIdle();
+                }
+            };
+        } else {
+            showError("Your browser doesn't support speech recognition. Try Chrome.");
+            micBtn.disabled = true;
+            micBtnText.innerText = "Not Supported";
+            micBtn.classList.add('opacity-50', 'cursor-not-allowed');
+        }
+
+        // Event Listener for Mic Button
+        micBtn.addEventListener('click', () => {
+            // Initialize Audio Context on first user gesture to reduce latency later
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 512; // Higher resolution for frequency analysis
+                audioSource = audioCtx.createMediaElementSource(audioPlayer);
+                audioSource.connect(analyser);
+                analyser.connect(audioCtx.destination);
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
+            if (isListening) {
+                recognition.stop();
+            } else {
+                try {
+                    recognition.start();
+                } catch(e) {
+                    console.error(e);
+                }
+            }
+        });
+
+        // Handles the text received from the user
+        async function handleUserUtterance(text) {
+            // Append user message to UI
+            appendMessage(text, 'user');
+            updateStatus('thinking');
+
+            // Add to chat history for Gemini
+            chatHistory.push({ role: "user", parts: [{ text: text }] });
+
+            try {
+                // Call Gemini for text response
+                const llmResponseText = await callGeminiLLM(chatHistory);
+                
+                // Add model response to history
+                chatHistory.push({ role: "model", parts: [{ text: llmResponseText }] });
+                
+                // Append bot message to UI
+                appendMessage(llmResponseText, 'model');
+
+                // Call Gemini TTS for voice response
+                await playTTS(llmResponseText);
+
+            } catch (error) {
+                console.error(error);
+                showError("Failed to communicate with AI.");
+                resetToIdle();
+            }
+        }
+
+        // Fetch text response from Gemini
+        async function callGeminiLLM(history) {
+            const payload = {
+                contents: history,
+                systemInstruction: {
+                    parts: [{ text: "You are a friendly, concise, and interactive virtual companion. Speak casually and keep responses relatively short (1-3 sentences) so they sound natural when spoken out loud." }]
+                }
+            };
+
+            const response = await fetchWithRetry(LLM_API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const result = await response.json();
+            if (result.candidates && result.candidates.length > 0) {
+                return result.candidates[0].content.parts[0].text;
+            } else {
+                throw new Error("Invalid response from LLM");
+            }
+        }
+
+        // Fetch and play TTS from Gemini
+        async function playTTS(text) {
+            updateStatus('speaking');
+            avatar.classList.remove('listening');
+            
+            // --- Generate Viseme Sequence from Text ---
+            // Map common letters to physical mouth shapes (w = width, h = height)
+            const VISEMES = {
+                'a': { w: 120, h: 45 }, 'e': { w: 130, h: 30 }, 'i': { w: 130, h: 20 },
+                'o': { w: 70,  h: 55 }, 'u': { w: 60,  h: 40 },
+                'm': { w: 110, h: 4  }, 'b': { w: 110, h: 4  }, 'p': { w: 110, h: 4  }, // Closed lips
+                'f': { w: 90,  h: 15 }, 'v': { w: 90,  h: 15 }, // Bite lip
+                'c': { w: 110, h: 25 }, 'd': { w: 110, h: 25 }, 'g': { w: 110, h: 25 },
+                'k': { w: 110, h: 25 }, 'n': { w: 110, h: 25 }, 'r': { w: 110, h: 25 },
+                's': { w: 120, h: 15 }, 't': { w: 120, h: 15 }, 'z': { w: 120, h: 15 },
+                'l': { w: 110, h: 30 }, 'w': { w: 70,  h: 20 }, 'q': { w: 70,  h: 20 },
+                'y': { w: 120, h: 20 },
+                'default': { w: 100, h: 15 },
+                ' ': { w: 100, h: 4 } // Space/punctuation = closed mouth
+            };
+
+            visemeSequence = [];
+            const textLower = text.toLowerCase();
+            for(let i = 0; i < textLower.length; i++) {
+                const char = textLower[i];
+                if (VISEMES[char]) {
+                    visemeSequence.push(VISEMES[char]);
+                } else if (char.match(/[a-z]/)) {
+                    visemeSequence.push(VISEMES['default']);
+                } else {
+                    visemeSequence.push(VISEMES[' ']); // Punctuation
+                }
+            }
+            
+            const payload = {
+                contents: [{ parts: [{ text: text }] }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: "Puck" } // Puck is upbeat
+                        }
+                    }
+                },
+                model: "gemini-2.5-flash-preview-tts"
+            };
+
+            try {
+                const response = await fetchWithRetry(TTS_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                const part = result?.candidates?.[0]?.content?.parts?.[0];
+                
+                if (part?.inlineData?.data) {
+                    const audioData = part.inlineData.data;
+                    const mimeType = part.inlineData.mimeType; // usually audio/pcm;rate=24000
+                    const sampleRateMatch = mimeType.match(/rate=(\d+)/);
+                    const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1], 10) : 24000;
+
+                    // Convert PCM to WAV
+                    const pcmData = base64ToArrayBuffer(audioData);
+                    const pcm16 = new Int16Array(pcmData);
+                    const wavBlob = pcmToWav(pcm16, sampleRate);
+                    const audioUrl = URL.createObjectURL(wavBlob);
+
+                    // Setup Audio Context for Lip Sync if not already done
+                    if (!audioCtx) {
+                        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                        analyser = audioCtx.createAnalyser();
+                        analyser.fftSize = 256;
+                        audioSource = audioCtx.createMediaElementSource(audioPlayer);
+                        audioSource.connect(analyser);
+                        analyser.connect(audioCtx.destination);
+                    }
+                    
+                    if (audioCtx.state === 'suspended') {
+                        await audioCtx.resume();
+                    }
+
+                    // Play Audio
+                    audioPlayer.src = audioUrl;
+                    audioPlayer.playbackRate = 1.15; // Speed up speech slightly for snappier responses
+                    
+                    audioPlayer.onplay = () => {
+                        isSpeaking = true;
+                        avatar.classList.add('speaking');
+                    };
+
+                    audioPlayer.onended = () => {
+                        isSpeaking = false;
+                        avatar.classList.remove('speaking');
+                        resetToIdle();
+                        URL.revokeObjectURL(audioUrl);
+                    };
+
+                    audioPlayer.play();
+                } else {
+                    throw new Error("No audio data returned");
+                }
+            } catch (error) {
+                console.error("TTS Error:", error);
+                showError("Could not generate voice.");
+                resetToIdle();
+            }
+        }
+
+        // Convert Base64 to ArrayBuffer
+        function base64ToArrayBuffer(base64) {
+            const binaryString = window.atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        // Convert PCM 16-bit to WAV Blob
+        function pcmToWav(pcm16, sampleRate) {
+            const numChannels = 1; // Gemini TTS is mono
+            const byteRate = sampleRate * numChannels * 2;
+            const blockAlign = numChannels * 2;
+            
+            const buffer = new ArrayBuffer(44 + pcm16.length * 2);
+            const view = new DataView(buffer);
+            
+            // RIFF chunk descriptor
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + pcm16.length * 2, true);
+            writeString(view, 8, 'WAVE');
+            
+            // fmt sub-chunk
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true); // Subchunk1Size
+            view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, byteRate, true);
+            view.setUint16(32, blockAlign, true);
+            view.setUint16(34, 16, true); // BitsPerSample
+            
+            // data sub-chunk
+            writeString(view, 36, 'data');
+            view.setUint32(40, pcm16.length * 2, true);
+            
+            // Write PCM samples
+            let offset = 44;
+            for (let i = 0; i < pcm16.length; i++, offset += 2) {
+                view.setInt16(offset, pcm16[i], true); // true for little-endian
+            }
+            
+            return new Blob([buffer], { type: 'audio/wav' });
+        }
+
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        }
+
+        // Generic Fetch with basic retry logic
+        async function fetchWithRetry(url, options, retries = 2) {
+            for (let i = 0; i <= retries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return response;
+                } catch (error) {
+                    if (i === retries) throw error;
+                    // Exponential backoff
+                    await new Promise(res => setTimeout(res, Math.pow(2, i) * 1000));
+                }
+            }
+        }
+
+        function appendMessage(text, sender) {
+            const div = document.createElement('div');
+            div.className = "flex w-full " + (sender === 'user' ? "justify-end" : "justify-start");
+            
+            const bubble = document.createElement('div');
+            bubble.className = "px-5 py-3 max-w-[85%] shadow-md " + 
+                (sender === 'user' 
+                    ? "bg-slate-700 text-white rounded-2xl rounded-tr-none" 
+                    : "bg-blue-600 text-white rounded-2xl rounded-tl-none");
+            bubble.innerText = text;
+            
+            div.appendChild(bubble);
+            chatLog.appendChild(div);
+            
+            // Auto scroll to bottom
+            chatLog.scrollTo({
+                top: chatLog.scrollHeight,
+                behavior: 'smooth'
+            });
+        }
+
+        function updateStatus(status) {
+            statusIndicator.className = 'status-dot'; // Reset
+            avatar.classList.remove('listening', 'thinking', 'speaking'); // Clear states
+            
+            switch(status) {
+                case 'listening':
+                    statusIndicator.classList.add('status-listening');
+                    statusText.innerText = 'Listening...';
+                    avatar.classList.add('listening');
+                    break;
+                case 'thinking':
+                    statusIndicator.classList.add('status-idle');
+                    statusIndicator.style.animation = 'blink 1s infinite';
+                    statusText.innerText = 'Thinking...';
+                    avatar.classList.add('thinking');
+                    break;
+                case 'speaking':
+                    statusIndicator.classList.add('status-speaking');
+                    statusIndicator.style.animation = 'none';
+                    statusText.innerText = 'Speaking';
+                    avatar.classList.add('speaking');
+                    break;
+                default: // idle
+                    statusIndicator.classList.add('status-idle');
+                    statusIndicator.style.animation = 'none';
+                    statusText.innerText = 'Idle';
+            }
+        }
+
+        function resetToIdle() {
+            updateStatus('idle');
+            micBtn.classList.replace('bg-emerald-600', 'bg-blue-600');
+            micBtn.classList.replace('hover:bg-emerald-500', 'hover:bg-blue-500');
+            micBtn.classList.replace('shadow-[0_0_20px_rgba(16,185,129,0.4)]', 'shadow-[0_0_20px_rgba(37,99,235,0.4)]');
+            micBtnText.innerText = "Tap to Speak";
+        }
+
+        function showError(msg) {
+            errorMessage.innerText = msg;
+            errorToast.classList.remove('opacity-0', 'pointer-events-none');
+            setTimeout(() => {
+                errorToast.classList.add('opacity-0', 'pointer-events-none');
+            }, 4000);
+        }
+
+        // --- Interactive 3D Face Tracking ---
+        document.addEventListener('mousemove', (e) => {
+            const svg = document.getElementById('avatar-svg');
+            const face = document.getElementById('face-elements');
+            if(!svg || !face) return;
+            
+            const rect = svg.getBoundingClientRect();
+            // Calculate center of the SVG relative to the viewport
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            
+            // Calculate normalized distance from center (-1 to 1)
+            const moveX = (e.clientX - centerX) / (window.innerWidth / 2);
+            const moveY = (e.clientY - centerY) / (window.innerHeight / 2);
+            
+            // Limit the intensity of the movement
+            const maxTilt = 12; // Degrees
+            const maxFacePan = 15; // Pixels
+
+            // Tilt the entire head container slightly
+            svg.style.transform = `perspective(1000px) rotateX(${-moveY * maxTilt}deg) rotateY(${moveX * maxTilt}deg)`;
+            
+            // Parallax shift the face elements to create depth inside the visor
+            face.style.transform = `translate(${moveX * maxFacePan}px, ${moveY * maxFacePan * 0.5}px)`;
+            
+            // Track pupils independently for more depth
+            const pupilPan = 6;
+            const pupilL = document.getElementById('pupil-l-group');
+            const pupilR = document.getElementById('pupil-r-group');
+            if(pupilL && pupilR) {
+                pupilL.style.transform = `translate(${moveX * pupilPan}px, ${moveY * pupilPan}px)`;
+                pupilR.style.transform = `translate(${moveX * pupilPan}px, ${moveY * pupilPan}px)`;
+            }
+        });
+
+        // --- Avatar Lip Sync & Blinking Logic ---
+        
+        let currentMouthWidth = 100;
+        let currentMouthTopY = 192;
+        let currentMouthBottomY = 202;
+
+        function animateFace() {
+            // Loop continuously for smooth physics interpolation
+            requestAnimationFrame(animateFace);
+
+            const mouth = document.getElementById('dynamic-mouth');
+            if (!mouth) return;
+
+            // Target dimensions for idle smile (a thick, visible shape)
+            let targetWidth = 100;
+            let targetTopY = 192; // Slightly higher than center for upper lip
+            let targetBottomY = 202; // Lower for bottom lip
+
+            if (isSpeaking && analyser) {
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(dataArray);
+                
+                // Get average volume to act as an envelope (0 to 1)
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+                const avgVolume = sum / dataArray.length;
+                // Normalize volume (adjust 40 based on typical mic/TTS output level)
+                const volumeEnvelope = Math.min(1, avgVolume / 30); 
+
+                // Scrub through the text-based viseme sequence based on audio playback progress
+                if (visemeSequence.length > 0 && audioPlayer.duration) {
+                    const progress = audioPlayer.currentTime / audioPlayer.duration;
+                    const index = Math.max(0, Math.min(visemeSequence.length - 1, Math.floor(progress * visemeSequence.length)));
+                    const targetViseme = visemeSequence[index];
+
+                    // Blend the target shape with the volume envelope.
+                    // If volume is 0 (a pause between words), it defaults back to the resting width/height.
+                    targetWidth = 100 + ((targetViseme.w - 100) * volumeEnvelope);
+                    const targetHeight = 4 + (targetViseme.h * volumeEnvelope);
+                    
+                    // Center the dynamic height
+                    targetTopY = 190 - (targetHeight / 2);
+                    targetBottomY = 190 + (targetHeight / 2);
+                } else {
+                    // Fallback to basic audio reactivity if visemes fail
+                    const targetHeight = 4 + (volumeEnvelope * 50);
+                    targetTopY = 190 - (targetHeight / 2);
+                    targetBottomY = 190 + (targetHeight / 2);
+                }
+            }
+
+            // Lerp (Linear Interpolation) for buttery smooth physics-like movement
+            // This prevents the jittery "flapping" and adds organic weight to the jaw
+            currentMouthWidth += (targetWidth - currentMouthWidth) * 0.35;
+            currentMouthTopY += (targetTopY - currentMouthTopY) * 0.35;
+            currentMouthBottomY += (targetBottomY - currentMouthBottomY) * 0.35;
+
+            const center = 200;
+            const leftX = center - (currentMouthWidth / 2);
+            const rightX = center + (currentMouthWidth / 2);
+            
+            // Use Cubic Bezier (C) for organic, rounded shapes (pill/capsule-like)
+            const cpOffset = currentMouthWidth * 0.25;
+
+            const path = `M ${leftX} 190 
+                          C ${leftX + cpOffset} ${currentMouthTopY} ${rightX - cpOffset} ${currentMouthTopY} ${rightX} 190 
+                          C ${rightX - cpOffset} ${currentMouthBottomY} ${leftX + cpOffset} ${currentMouthBottomY} ${leftX} 190 Z`;
+            
+            mouth.setAttribute('d', path);
+        }
+
+        function blink() {
+            const eyes = document.querySelectorAll('.eye');
+            // Close eyes (squash vertically for a digital blink effect)
+            eyes.forEach(eye => eye.style.transform = 'scaleY(0.1)'); 
+            
+            // Open eyes quickly
+            setTimeout(() => {
+                eyes.forEach(eye => eye.style.transform = 'scaleY(1)'); 
+            }, 120);
+            
+            // Randomly schedule next blink (between 2 and 6 seconds)
+            setTimeout(blink, 2000 + Math.random() * 4000);
+        }
+        
+        // Start random blinking
+        blink();
+        
+        // Start continuous mouth animation loop
+        animateFace();
+
+    </script>
+</body>
+</html>
