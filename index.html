@@ -235,12 +235,8 @@
     </div>
 
     <script type="module">
-        import { GoogleGenAI } from 'https://esm.run/@google/genai';
-
-        const API_KEY = ""; // Environment injected automatically
-        const ai = new GoogleGenAI({apiKey: API_KEY});
+        const API_KEY = ""; // The Canvas environment automatically injects the key here
         
-        // DOM Elements
         const avatar = document.getElementById('avatar');
         const talkBtn = document.getElementById('talk-btn');
         const talkBtnText = document.getElementById('talk-btn-text');
@@ -251,90 +247,30 @@
         const errorToast = document.getElementById('error-toast');
         const errorMessage = document.getElementById('error-message');
 
-        // Animation State
-        const visemeMap = { 'REST': { w: 100, t: 191, b: 193 } };
-        let targetMouth = { ...visemeMap['REST'] };
-        let currentMouth = { ...visemeMap['REST'] };
+        window.addEventListener('error', (e) => showError("Error: " + e.message));
+        window.addEventListener('unhandledrejection', (e) => showError("Network: " + (e.reason?.message || e.reason || "Connection blocked")));
 
-        let isLive = false;
-        let sessionPromise = null;
-        let inputAudioContext = null;
+        // Setup Speech Recognition
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition = null;
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.lang = 'en-US';
+        } else {
+            showError("Speech Recognition is not supported in this browser.");
+        }
+
+        // Setup Web Audio for Lip Syncing
         let outputAudioContext = null;
         let outputNode = null;
         let analyser = null;
         let dataArray = null;
-        let nextStartTime = 0;
-        let sources = new Set();
-        let mediaStream = null;
 
-        // --- Web Audio Worklet for Raw PCM Capture ---
-        const workletCode = `
-        class RecorderProcessor extends AudioWorkletProcessor {
-          process(inputs, outputs, parameters) {
-            const input = inputs[0];
-            if (input.length > 0) {
-              this.port.postMessage(input[0]); // Send raw Float32 data back
-            }
-            return true;
-          }
-        }
-        registerProcessor('recorder-processor', RecorderProcessor);
-        `;
-
-        function decode(base64) {
-            const binaryString = atob(base64);
-            const len = binaryString.length;
-            const bytes = new Uint8Array(len);
-            for (let i = 0; i < len; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
-            return bytes;
-        }
-
-        function encode(bytes) {
-            let binary = '';
-            const len = bytes.byteLength;
-            for (let i = 0; i < len; i++) {
-                binary += String.fromCharCode(bytes[i]);
-            }
-            return btoa(binary);
-        }
-
-        async function decodeAudioData(data, ctx, sampleRate, numChannels) {
-            const dataInt16 = new Int16Array(data.buffer);
-            const frameCount = dataInt16.length / numChannels;
-            const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-            for (let channel = 0; channel < numChannels; channel++) {
-                const channelData = buffer.getChannelData(channel);
-                for (let i = 0; i < frameCount; i++) {
-                    channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
-                }
-            }
-            return buffer;
-        }
-
-        function createBlob(data) {
-            const l = data.length;
-            const int16 = new Int16Array(l);
-            for (let i = 0; i < l; i++) {
-                int16[i] = data[i] * 32768; // Convert Float32 to Int16
-            }
-            return {
-                data: encode(new Uint8Array(int16.buffer)),
-                mimeType: 'audio/pcm;rate=16000',
-            };
-        }
-
-        async function startLiveSession() {
-            try {
-                updateStatus('thinking', 'Connecting...');
-                talkBtn.disabled = true;
-                
-                // 1. Initialize Strict Audio Contexts
-                inputAudioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
+        function initAudio() {
+            if (!outputAudioContext) {
                 outputAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-                
-                // 2. Setup Output Node & Lip Sync Analyzer
                 outputNode = outputAudioContext.createGain();
                 outputNode.connect(outputAudioContext.destination);
                 
@@ -342,138 +278,125 @@
                 analyser.fftSize = 256;
                 outputNode.connect(analyser);
                 dataArray = new Uint8Array(analyser.frequencyBinCount);
-                
-                // 3. Request Microphone Access
-                mediaStream = await navigator.mediaDevices.getUserMedia({
-                    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-                });
-                
-                // 4. Mount Audio Worklet
-                const workletBlob = new Blob([workletCode], { type: "application/javascript" });
-                const workletUrl = URL.createObjectURL(workletBlob);
-                await inputAudioContext.audioWorklet.addModule(workletUrl);
-                
-                nextStartTime = 0;
-                sources.clear();
-                
-                // 5. Connect to Gemini Live API
-                sessionPromise = ai.live.connect({
-                    model: 'gemini-3.1-flash-live-preview',
-                    callbacks: {
-                        onopen: () => {
-                            updateStatus('listening', 'Live Session Active');
-                            isLive = true;
-                            talkBtn.disabled = false;
-                            talkBtnText.innerText = "End Session";
-                            talkBtnIcon.className = "fa-solid fa-stop mr-3 text-xl";
-                            
-                            // Style for active state
-                            talkBtn.classList.replace('bg-blue-600', 'bg-red-600');
-                            talkBtn.classList.replace('hover:bg-blue-500', 'hover:bg-red-500');
-                            talkBtn.classList.replace('focus:ring-blue-600', 'focus:ring-red-600');
-                            talkBtn.classList.replace('shadow-[0_0_20px_rgba(37,99,235,0.4)]', 'shadow-[0_0_20px_rgba(220,38,38,0.4)]');
-                            talkBtn.classList.replace('hover:shadow-[0_0_30px_rgba(37,99,235,0.6)]', 'hover:shadow-[0_0_30px_rgba(220,38,38,0.6)]');
-                            
-                            appendMessage("Live full-duplex session established! Speak naturally to interrupt me at any time.", "model");
-                            
-                            // Route Mic -> Worklet -> Session
-                            const source = inputAudioContext.createMediaStreamSource(mediaStream);
-                            const recorder = new AudioWorkletNode(inputAudioContext, 'recorder-processor');
-                            
-                            recorder.port.onmessage = (event) => {
-                                const inputData = event.data;
-                                const pcmBlob = createBlob(inputData);
-                                sessionPromise.then((session) => {
-                                    session.sendRealtimeInput({ audio: pcmBlob });
-                                });
-                            };
-                            
-                            source.connect(recorder);
-                            recorder.connect(inputAudioContext.destination);
-                        },
-                        onmessage: async (message) => {
-                            // Process AI Audio Stream
-                            const base64EncodedAudioString = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-                            if (base64EncodedAudioString) {
-                                updateStatus('speaking', 'Speaking...');
-                                nextStartTime = Math.max(nextStartTime, outputAudioContext.currentTime);
-                                
-                                const audioBuffer = await decodeAudioData(decode(base64EncodedAudioString), outputAudioContext, 24000, 1);
-                                const source = outputAudioContext.createBufferSource();
-                                source.buffer = audioBuffer;
-                                source.connect(outputNode);
-                                
-                                source.addEventListener('ended', () => {
-                                    sources.delete(source);
-                                    if(sources.size === 0) updateStatus('listening', 'Live Session Active');
-                                });
-                                
-                                source.start(nextStartTime);
-                                nextStartTime = nextStartTime + audioBuffer.duration;
-                                sources.add(source);
-                            }
-                            
-                            // Immediately halt playback if user interrupts
-                            if (message.serverContent?.interrupted) {
-                                for (const source of sources.values()) {
-                                    source.stop();
-                                    sources.delete(source);
-                                }
-                                nextStartTime = 0;
-                                updateStatus('listening', 'Interrupted. Listening...');
-                            }
-                        },
-                        onerror: (e) => {
-                            console.error('Session Error:', e);
-                            showError("Connection lost or interrupted.");
-                            endSession();
-                        },
-                        onclose: (e) => {
-                            endSession();
-                        }
-                    },
-                    config: {
-                        responseModalities: ["AUDIO"],
-                        speechConfig: {
-                            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } }
-                        },
-                        systemInstruction: "You are a highly expressive, interactive AI avatar named Gemini. This is a real-time full-duplex live session. Keep your responses exceptionally conversational, snappy, and concise. Be ready for the user to interrupt you. Act like a fun human on a phone call.",
-                    }
-                });
-                
-            } catch (err) {
-                console.error(err);
-                showError("Could not access microphone or connect.");
-                endSession();
+            }
+            if (outputAudioContext.state === 'suspended') {
+                outputAudioContext.resume();
             }
         }
 
-        function endSession() {
-            isLive = false;
-            if (mediaStream) {
-                mediaStream.getTracks().forEach(track => track.stop());
-                mediaStream = null;
-            }
-            if (inputAudioContext) {
-                inputAudioContext.close();
-                inputAudioContext = null;
-            }
-            if (outputAudioContext) {
-                outputAudioContext.close();
-                outputAudioContext = null;
-                analyser = null;
-            }
-            sessionPromise = null;
-            resetUI();
-        }
+        const visemeMap = { 'REST': { w: 100, t: 191, b: 193 } };
+        let targetMouth = { ...visemeMap['REST'] };
+        let currentMouth = { ...visemeMap['REST'] };
+        let isSpeaking = false;
 
-        talkBtn.addEventListener('click', () => {
-            if (isLive) {
-                endSession();
-            } else {
-                startLiveSession();
+        // Start listening to user
+        talkBtn.addEventListener('click', async () => {
+            if (!recognition) return showError("Speech recognition not available.");
+            
+            initAudio();
+            talkBtn.disabled = true;
+            updateUIState('listening');
+            
+            try {
+                recognition.start();
+            } catch(e) {
+                showError("Microphone error. Please try again.");
+                resetUI();
             }
         });
+
+        if (recognition) {
+            recognition.onresult = async (event) => {
+                const transcript = event.results[0][0].transcript;
+                appendMessage(transcript, 'user');
+                updateUIState('thinking');
+                
+                try {
+                    await processConversation(transcript);
+                } catch (err) {
+                    console.error(err);
+                    showError("Failed to process conversation.");
+                    resetUI();
+                }
+            };
+
+            recognition.onerror = (event) => {
+                if (event.error !== 'no-speech') {
+                    showError("Microphone error: " + event.error);
+                }
+                resetUI();
+            };
+        }
+
+        async function processConversation(userText) {
+            // 1. Ask Gemini 3 Flash for a response
+            const chatUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${API_KEY}`;
+            const chatPayload = {
+                contents: [{ parts: [{ text: userText }] }],
+                systemInstruction: { parts: [{ text: "You are an expressive, interactive AI avatar named Gemini. Keep your responses exceptionally conversational, snappy, and concise. Act like a fun human on a phone call. Max 2-3 sentences." }] }
+            };
+            
+            const chatRes = await fetch(chatUrl, { method: 'POST', body: JSON.stringify(chatPayload) });
+            const chatData = await chatRes.json();
+            
+            if (!chatData.candidates || chatData.candidates.length === 0) throw new Error("No response from AI.");
+            const aiText = chatData.candidates[0].content.parts[0].text;
+            
+            appendMessage(aiText, 'model');
+
+            // 2. Convert response to Speech using Gemini TTS
+            const ttsUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${API_KEY}`;
+            const ttsPayload = {
+                contents: [{ parts: [{ text: aiText }] }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } }
+                }
+            };
+
+            const ttsRes = await fetch(ttsUrl, { method: 'POST', body: JSON.stringify(ttsPayload) });
+            const ttsData = await ttsRes.json();
+            
+            const audioBase64 = ttsData.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (!audioBase64) throw new Error("Failed to generate audio.");
+
+            // 3. Play the audio and animate mouth
+            await playRawPCM(audioBase64);
+        }
+
+        async function playRawPCM(base64Audio) {
+            updateUIState('speaking');
+            
+            // Decode base64 to ArrayBuffer, stripping odd bytes
+            const binaryString = atob(base64Audio);
+            const len = Math.floor(binaryString.length / 2) * 2;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
+            
+            // Convert to Int16 and fill AudioBuffer
+            const dataInt16 = new Int16Array(bytes.buffer);
+            const sampleRate = 24000; // Gemini TTS standard
+            const buffer = outputAudioContext.createBuffer(1, dataInt16.length, sampleRate);
+            const channelData = buffer.getChannelData(0);
+            
+            for (let i = 0; i < dataInt16.length; i++) {
+                channelData[i] = dataInt16[i] / 32768.0;
+            }
+            
+            const source = outputAudioContext.createBufferSource();
+            source.buffer = buffer;
+            source.connect(outputNode);
+            
+            source.onended = () => {
+                isSpeaking = false;
+                resetUI();
+            };
+            
+            isSpeaking = true;
+            source.start(0);
+        }
+
+        // --- UI & Animation Helpers ---
 
         function appendMessage(text, sender) {
             const div = document.createElement('div');
@@ -491,43 +414,44 @@
             chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: 'smooth' });
         }
 
-        function updateStatus(status, customText) {
+        function updateUIState(state) {
             statusIndicator.className = 'status-dot';
             avatar.classList.remove('listening', 'thinking', 'speaking');
             
-            switch(status) {
-                case 'listening':
-                    statusIndicator.classList.add('status-listening');
-                    statusText.innerText = customText || 'Listening...';
-                    avatar.classList.add('listening');
-                    break;
-                case 'thinking':
-                    statusIndicator.classList.add('status-idle');
-                    statusText.innerText = customText || 'Thinking...';
-                    avatar.classList.add('thinking');
-                    break;
-                case 'speaking':
-                    statusIndicator.classList.add('status-speaking');
-                    statusText.innerText = customText || 'Speaking';
-                    avatar.classList.add('speaking');
-                    break;
-                default: 
-                    statusIndicator.classList.add('status-idle');
-                    statusText.innerText = customText || 'Idle';
+            if (state === 'listening') {
+                statusIndicator.classList.add('status-listening');
+                statusText.innerText = 'Listening...';
+                avatar.classList.add('listening');
+                talkBtnText.innerText = "Speak Now...";
+                talkBtnIcon.className = "fa-solid fa-microphone-lines mr-3 text-xl animate-pulse";
+                talkBtn.classList.replace('bg-blue-600', 'bg-emerald-600');
+            } else if (state === 'thinking') {
+                statusIndicator.classList.add('status-idle');
+                statusText.innerText = 'Thinking...';
+                avatar.classList.add('thinking');
+                talkBtnText.innerText = "Processing...";
+                talkBtnIcon.className = "fa-solid fa-microchip mr-3 text-xl";
+                talkBtn.classList.replace('bg-emerald-600', 'bg-purple-600');
+            } else if (state === 'speaking') {
+                statusIndicator.classList.add('status-speaking');
+                statusText.innerText = 'Speaking...';
+                avatar.classList.add('speaking');
+                talkBtnText.innerText = "Avatar Speaking...";
+                talkBtnIcon.className = "fa-solid fa-volume-high mr-3 text-xl";
+                talkBtn.classList.replace('bg-purple-600', 'bg-amber-500');
             }
         }
 
         function resetUI() {
-            updateStatus('idle', 'Ready');
+            statusIndicator.className = 'status-dot status-idle';
+            statusText.innerText = 'Ready';
+            avatar.classList.remove('listening', 'thinking', 'speaking');
             talkBtn.disabled = false;
-            talkBtnText.innerText = "Start Live Session";
-            talkBtnIcon.className = "fa-solid fa-satellite-dish mr-3 text-xl group-hover:scale-110 transition-transform";
+            talkBtnText.innerText = "Click to Speak";
+            talkBtnIcon.className = "fa-solid fa-microphone mr-3 text-xl group-hover:scale-110 transition-transform";
             
-            talkBtn.classList.replace('bg-red-600', 'bg-blue-600');
-            talkBtn.classList.replace('hover:bg-red-500', 'hover:bg-blue-500');
-            talkBtn.classList.replace('focus:ring-red-600', 'focus:ring-blue-600');
-            talkBtn.classList.replace('shadow-[0_0_20px_rgba(220,38,38,0.4)]', 'shadow-[0_0_20px_rgba(37,99,235,0.4)]');
-            talkBtn.classList.replace('hover:shadow-[0_0_30px_rgba(220,38,38,0.6)]', 'hover:shadow-[0_0_30px_rgba(37,99,235,0.6)]');
+            // Reset button colors
+            talkBtn.className = "group relative inline-flex items-center justify-center px-8 py-4 font-bold text-white transition-all duration-200 bg-blue-600 font-pj rounded-xl hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-600 shadow-[0_0_20px_rgba(37,99,235,0.4)] hover:shadow-[0_0_30px_rgba(37,99,235,0.6)]";
         }
 
         function showError(msg) {
@@ -535,7 +459,7 @@
             errorToast.classList.remove('opacity-0', 'pointer-events-none');
             setTimeout(() => {
                 errorToast.classList.add('opacity-0', 'pointer-events-none');
-            }, 4000);
+            }, 6000);
         }
 
         // 3D Parallax Mouse Tracking
@@ -561,7 +485,7 @@
             }
         });
 
-        // Random Blinking
+        // Blinking Animation
         function blink() {
             const eyes = document.querySelectorAll('.eye');
             eyes.forEach(eye => eye.style.transform = 'scaleY(0.1)'); 
@@ -572,15 +496,13 @@
         }
         blink();
 
-        // Hardware-Accelerated Lip Sync Animation Loop
+        // Audio-Driven Lip Sync Animation Loop
         function animateFace() {
             requestAnimationFrame(animateFace);
             
-            // Check if Live Audio is playing and Analyzer exists
-            if (isLive && analyser && dataArray) {
+            if (isSpeaking && analyser && dataArray) {
                 analyser.getByteFrequencyData(dataArray);
                 
-                // Segment frequencies: Lows (vowels like O, U) vs Highs (consonants like S, T)
                 let lowAvg = 0;
                 let highAvg = 0;
                 const half = Math.floor(dataArray.length / 2);
@@ -591,10 +513,9 @@
                 lowAvg = lowAvg / half;
                 highAvg = highAvg / half;
 
-                // Thresholds to ensure the mouth closes fully on quiet moments
                 if (lowAvg > 8 || highAvg > 8) {
-                    const openAmount = 191 + (lowAvg * 0.4); // Drops jaw on bass/vocals
-                    const widthAmount = 100 + (highAvg * 0.8) - (lowAvg * 0.2); // Widens on consonants
+                    const openAmount = 191 + (lowAvg * 0.4); 
+                    const widthAmount = 100 + (highAvg * 0.8) - (lowAvg * 0.2); 
                     
                     targetMouth = { 
                         w: Math.max(50, Math.min(180, widthAmount)), 
@@ -608,7 +529,7 @@
                 targetMouth = visemeMap['REST'];
             }
 
-            // Lerp smoothing for organic buttery movement
+            // Smooth Interpolation
             currentMouth.w += (targetMouth.w - currentMouth.w) * 0.35;
             currentMouth.t += (targetMouth.t - currentMouth.t) * 0.35;
             currentMouth.b += (targetMouth.b - currentMouth.b) * 0.35;
@@ -627,8 +548,8 @@
             }
         }
         
-        // Start the animation loop immediately
         animateFace();
+        resetUI(); // Initialize button state
     </script>
 </body>
 </html>
