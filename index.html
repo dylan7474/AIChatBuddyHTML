@@ -45,9 +45,9 @@
             transition: fill 0.4s ease;
         }
 
-        /* Dynamic Mouth Transition */
+        /* Mouth shape is set every frame from JS; only the colour transitions */
         #dynamic-mouth {
-            transition: d 0.08s ease-out, fill 0.3s ease;
+            transition: fill 0.3s ease;
         }
 
         /* Visor Styles */
@@ -210,6 +210,7 @@
 
                             <!-- Mouth -->
                             <path id="dynamic-mouth" d="M 150 190 C 175 192 225 192 250 190 C 225 202 175 202 150 190 Z" fill="#38bdf8" />
+                            <path id="mouth-inner" d="" fill="#020617" />
                         </g>
                     </g>
                 </svg>
@@ -304,32 +305,27 @@
             showError("Speech Recognition is not supported in this browser.");
         }
 
-        // Setup Web Audio for Lip Syncing
+        // Setup Web Audio
         let outputAudioContext = null;
         let outputNode = null;
-        let analyser = null;
-        let dataArray = null;
 
         function initAudio() {
             if (!outputAudioContext) {
                 outputAudioContext = new (window.AudioContext || window.webkitAudioContext)();
                 outputNode = outputAudioContext.createGain();
                 outputNode.connect(outputAudioContext.destination);
-                
-                analyser = outputAudioContext.createAnalyser();
-                analyser.fftSize = 256;
-                outputNode.connect(analyser);
-                dataArray = new Uint8Array(analyser.frequencyBinCount);
             }
             if (outputAudioContext.state === 'suspended') {
                 outputAudioContext.resume();
             }
         }
 
-        const visemeMap = { 'REST': { w: 100, t: 191, b: 193 } };
-        let targetMouth = { ...visemeMap['REST'] };
-        let currentMouth = { ...visemeMap['REST'] };
+        // Mouth controls, each 0..1: open = jaw drop, wide = stretched ("ee", "s"), round = pursed ("oo", "oh")
+        const MOUTH_REST = { open: 0, wide: 0, round: 0 };
+        let currentMouth = { ...MOUTH_REST };
         let isSpeaking = false;
+        let lipTrack = null;   // mouth shape for every frame of the reply being played
+        let speechStart = 0;   // outputAudioContext time the reply starts playing
 
         // Start listening to user
         talkBtn.addEventListener('click', async () => {
@@ -431,17 +427,21 @@
                 channelData[i] = dataInt16[i] / 32768.0;
             }
             
+            lipTrack = buildLipTrack(channelData, sampleRate);
+
             const source = outputAudioContext.createBufferSource();
             source.buffer = buffer;
             source.connect(outputNode);
             
             source.onended = () => {
                 isSpeaking = false;
+                lipTrack = null;
                 resetUI();
             };
             
             isSpeaking = true;
-            source.start(0);
+            speechStart = outputAudioContext.currentTime + 0.05;
+            source.start(speechStart);
         }
 
         // --- UI & Animation Helpers ---
@@ -546,56 +546,121 @@
         }
         blink();
 
-        // Audio-Driven Lip Sync Animation Loop
-        function animateFace() {
-            requestAnimationFrame(animateFace);
-            
-            if (isSpeaking && analyser && dataArray) {
-                analyser.getByteFrequencyData(dataArray);
-                
-                let lowAvg = 0;
-                let highAvg = 0;
-                const half = Math.floor(dataArray.length / 2);
-                
-                for(let i = 0; i < half; i++) lowAvg += dataArray[i];
-                for(let i = half; i < dataArray.length; i++) highAvg += dataArray[i];
-                
-                lowAvg = lowAvg / half;
-                highAvg = highAvg / half;
+        // --- Lip Sync ---
+        // The whole reply is decoded before it plays, so the mouth shapes are worked out
+        // up front from the audio: loudness drives the jaw, and where the energy sits
+        // (low for "oo"/"oh", high for "ee"/"s") sets how wide or round the lips are.
+        const LIP_FPS = 100;
+        const LIP_LEAD = 0.04; // the mouth moves slightly ahead of the sound, as in real speech
+        const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
-                if (lowAvg > 8 || highAvg > 8) {
-                    const openAmount = 191 + (lowAvg * 0.4); 
-                    const widthAmount = 100 + (highAvg * 0.8) - (lowAvg * 0.2); 
-                    
-                    targetMouth = { 
-                        w: Math.max(50, Math.min(180, widthAmount)), 
-                        t: 190 - (openAmount - 190)/2, 
-                        b: Math.min(235, openAmount) 
-                    };
-                } else {
-                    targetMouth = visemeMap['REST'];
+        function buildLipTrack(samples, sampleRate) {
+            const hop = Math.round(sampleRate / LIP_FPS);
+            const frames = Math.floor(samples.length / hop);
+            const poleA = (hz) => Math.exp(-2 * Math.PI * hz / sampleRate);
+            const a900 = poleA(900), a1500 = poleA(1500), a3000 = poleA(3000);
+            const rms = new Float32Array(frames);
+            const lowFrac = new Float32Array(frames);    // share of energy below ~900 Hz ("oo", "oh")
+            const brightFrac = new Float32Array(frames); // share above ~1.5 kHz ("ee", "ih")
+            const hissFrac = new Float32Array(frames);   // share above ~3 kHz ("s", "sh", "f")
+            let lp900 = 0, lp1500 = 0, lp3000 = 0;
+            for (let f = 0; f < frames; f++) {
+                let e = 0, eLow = 0, eBright = 0, eHiss = 0;
+                for (let i = f * hop; i < (f + 1) * hop; i++) {
+                    const x = samples[i];
+                    lp900 = x + a900 * (lp900 - x);   // one-pole low-pass filters
+                    lp1500 = x + a1500 * (lp1500 - x);
+                    lp3000 = x + a3000 * (lp3000 - x);
+                    e += x * x;
+                    eLow += lp900 * lp900;
+                    eBright += (x - lp1500) * (x - lp1500);
+                    eHiss += (x - lp3000) * (x - lp3000);
                 }
-            } else {
-                targetMouth = visemeMap['REST'];
+                rms[f] = Math.sqrt(e / hop);
+                lowFrac[f] = eLow / (e + 1e-12);
+                brightFrac[f] = eBright / (e + 1e-12);
+                hissFrac[f] = eHiss / (e + 1e-12);
             }
 
-            // Smooth Interpolation
-            currentMouth.w += (targetMouth.w - currentMouth.w) * 0.35;
-            currentMouth.t += (targetMouth.t - currentMouth.t) * 0.35;
-            currentMouth.b += (targetMouth.b - currentMouth.b) * 0.35;
+            // Everything is judged against this reply itself, so any voice or volume works:
+            // its 90th-percentile loudness opens the mouth fully, and lips go wide or round
+            // when a frame is brighter or darker than the voice usually is
+            const pct = (arr, p) => {
+                const sorted = Array.from(arr).sort((a, b) => a - b);
+                return sorted[Math.floor((sorted.length - 1) * p)] || 0;
+            };
+            const ref = Math.max(pct(rms, 0.9), 1e-4);
+            const voiced = (arr) => arr.filter((_, f) => rms[f] > ref * 0.3);
+            const vLow = voiced(lowFrac), vBright = voiced(brightFrac);
+            const lowMid = pct(vLow, 0.5), lowTop = pct(vLow, 0.9);
+            const brightMid = pct(vBright, 0.5), brightTop = pct(vBright, 0.9);
 
-            const mouth = document.getElementById('dynamic-mouth');
-            if (mouth) {
-                const center = 200;
-                const leftX = center - (currentMouth.w / 2);
-                const rightX = center + (currentMouth.w / 2);
-                const cpOffset = currentMouth.w * 0.25;
-
-                const path = `M ${leftX} 190 
-                              C ${leftX + cpOffset} ${currentMouth.t} ${rightX - cpOffset} ${currentMouth.t} ${rightX} 190 
-                              C ${rightX - cpOffset} ${currentMouth.b} ${leftX + cpOffset} ${currentMouth.b} ${leftX} 190 Z`;
-                mouth.setAttribute('d', path);
+            const track = new Array(frames);
+            let open = 0, wide = 0, round = 0;
+            for (let f = 0; f < frames; f++) {
+                const loud = rms[f] / ref;
+                let o = Math.pow(clamp01((loud - 0.1) / 0.8), 0.75);
+                let w = 0, r = 0;
+                if (loud > 0.1) {
+                    w = clamp01((brightFrac[f] - brightMid) / (brightTop - brightMid + 1e-6));
+                    r = clamp01((lowFrac[f] - lowMid) / (lowTop - lowMid + 1e-6)) * (1 - w);
+                    if (hissFrac[f] > 0.3) { o *= 0.45; w = 1; } // hissy sounds go through nearly closed teeth
+                }
+                // Opens fast and closes a little slower, so syllables read clearly without flicker
+                open += (o - open) * (o > open ? 0.6 : 0.4);
+                wide += (w - wide) * 0.3;
+                round += (r - round) * 0.3;
+                track[f] = { open, wide, round };
             }
+            return track;
+        }
+
+        // A lens between two corners; c near 1 gives a round "o", lower gives a flatter slit
+        function lensPath(cx, cy, hw, top, bottom, c) {
+            const yt = cy + (top - cy) * 4 / 3;     // control points that make the curve peak at top/bottom
+            const yb = cy + (bottom - cy) * 4 / 3;
+            const l = cx - hw, r = cx + hw, dx = hw * c;
+            return `M ${l} ${cy} C ${cx - dx} ${yt} ${cx + dx} ${yt} ${r} ${cy} C ${cx + dx} ${yb} ${cx - dx} ${yb} ${l} ${cy} Z`;
+        }
+
+        const mouthOuter = document.getElementById('dynamic-mouth');
+        const mouthInner = document.getElementById('mouth-inner');
+
+        function drawMouth({ open, wide, round }) {
+            const cx = 200;
+            const cy = 191 - 2 * (1 - open) * (1 - round);   // corners lift into a slight smile at rest
+            const hw = 50 + wide * 14 - round * 22;           // half width: stretched for "ee", pursed for "oo"
+            const up = 2 + open * 13 + round * 7;
+            const down = 6 + open * 26 + round * 7;
+            const c = 0.55 + round * 0.4;
+            mouthOuter.setAttribute('d', lensPath(cx, cy, hw, cy - up, cy + down, c));
+
+            // The dark inside shows once the lips part, leaving lips about 5 px thick
+            const part = clamp01((open + round * 0.3 - 0.08) / 0.25);
+            mouthInner.setAttribute('d', part > 0
+                ? lensPath(cx, cy, Math.max(0, hw - 11), cy - Math.max(0, up - 6) * part, cy + Math.max(0, down - 10) * part, Math.min(0.95, c + 0.15))
+                : '');
+        }
+
+        let lastFrameTime = performance.now();
+        function animateFace(now = performance.now()) {
+            requestAnimationFrame(animateFace);
+            const dt = Math.min(0.1, Math.max(0, (now - lastFrameTime) / 1000));
+            lastFrameTime = now;
+
+            let target = MOUTH_REST;
+            if (isSpeaking && lipTrack) {
+                // Position in the reply that is being heard now, allowing for the output delay
+                const heard = outputAudioContext.currentTime - speechStart
+                    - (outputAudioContext.outputLatency || outputAudioContext.baseLatency || 0);
+                const f = Math.floor((heard + LIP_LEAD) * LIP_FPS);
+                if (f >= 0 && f < lipTrack.length) target = lipTrack[f];
+            }
+
+            // Light smoothing to hide the 10 ms steps; the track itself is already smoothed
+            const k = 1 - Math.exp(-dt / 0.025);
+            for (const key in currentMouth) currentMouth[key] += (target[key] - currentMouth[key]) * k;
+            drawMouth(currentMouth);
         }
         
         animateFace();
