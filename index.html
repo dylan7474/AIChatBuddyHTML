@@ -109,8 +109,17 @@
         <div class="flex items-center text-sm font-medium text-slate-300">
             <span id="status-indicator" class="status-dot status-idle"></span>
             <span id="status-text">Idle</span>
+            <button id="key-btn" class="ml-4 text-slate-400 hover:text-blue-400" title="Gemini API key"><i class="fa-solid fa-key"></i></button>
         </div>
     </header>
+
+    <!-- API Key Bar (shown when no key is saved) -->
+    <form id="key-form" class="hidden w-full max-w-4xl px-4 py-3 flex flex-wrap items-center gap-2 text-sm text-slate-300">
+        <label for="key-input">Gemini API key:</label>
+        <input id="key-input" type="password" autocomplete="off" placeholder="Paste your key from aistudio.google.com" class="flex-1 min-w-[12rem] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500">
+        <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg px-4 py-2">Save</button>
+        <span class="w-full text-xs text-slate-500">Stored only in this browser.</span>
+    </form>
 
     <!-- Main Content Area -->
     <main class="flex-1 w-full max-w-4xl flex flex-col md:flex-row overflow-hidden relative">
@@ -247,6 +256,39 @@
         const errorToast = document.getElementById('error-toast');
         const errorMessage = document.getElementById('error-message');
 
+        // Outside Canvas nothing injects API_KEY, so ask for one and keep it in this browser
+        const keyForm = document.getElementById('key-form');
+        const keyInput = document.getElementById('key-input');
+        function getApiKey() {
+            if (API_KEY) return API_KEY;
+            try { return localStorage.getItem('geminiApiKey') || ""; } catch (e) { return ""; }
+        }
+        function showKeyForm() {
+            keyForm.classList.remove('hidden');
+            keyInput.focus();
+        }
+        keyForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const key = keyInput.value.trim();
+            if (!key) return;
+            try { localStorage.setItem('geminiApiKey', key); } catch (err) {}
+            keyInput.value = "";
+            keyForm.classList.add('hidden');
+        });
+        document.getElementById('key-btn').addEventListener('click', () => keyForm.classList.toggle('hidden'));
+        if (!getApiKey()) showKeyForm();
+
+        async function callGemini(model, payload) {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(getApiKey())}`;
+            const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                if (res.status === 400 || res.status === 401 || res.status === 403) showKeyForm();
+                throw new Error(data.error?.message || `Gemini returned ${res.status}`);
+            }
+            return data;
+        }
+
         window.addEventListener('error', (e) => showError("Error: " + e.message));
         window.addEventListener('unhandledrejection', (e) => showError("Network: " + (e.reason?.message || e.reason || "Connection blocked")));
 
@@ -292,7 +334,11 @@
         // Start listening to user
         talkBtn.addEventListener('click', async () => {
             if (!recognition) return showError("Speech recognition not available.");
-            
+            if (!getApiKey()) {
+                showKeyForm();
+                return showError("Enter your Gemini API key first.");
+            }
+
             initAudio();
             talkBtn.disabled = true;
             updateUIState('listening');
@@ -306,7 +352,13 @@
         });
 
         if (recognition) {
+            let gotResult = false;
+            recognition.onstart = () => { gotResult = false; };
+            // Ending without a result (silence, mic stopped) must not leave the button disabled
+            recognition.onend = () => { if (!gotResult) resetUI(); };
+
             recognition.onresult = async (event) => {
+                gotResult = true;
                 const transcript = event.results[0][0].transcript;
                 appendMessage(transcript, 'user');
                 updateUIState('thinking');
@@ -315,7 +367,7 @@
                     await processConversation(transcript);
                 } catch (err) {
                     console.error(err);
-                    showError("Failed to process conversation.");
+                    showError("Failed: " + err.message);
                     resetUI();
                 }
             };
@@ -330,22 +382,19 @@
 
         async function processConversation(userText) {
             // 1. Ask Gemini 3 Flash for a response
-            const chatUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${API_KEY}`;
             const chatPayload = {
                 contents: [{ parts: [{ text: userText }] }],
                 systemInstruction: { parts: [{ text: "You are an expressive, interactive AI avatar named Gemini. Keep your responses exceptionally conversational, snappy, and concise. Act like a fun human on a phone call. Max 2-3 sentences." }] }
             };
             
-            const chatRes = await fetch(chatUrl, { method: 'POST', body: JSON.stringify(chatPayload) });
-            const chatData = await chatRes.json();
-            
-            if (!chatData.candidates || chatData.candidates.length === 0) throw new Error("No response from AI.");
-            const aiText = chatData.candidates[0].content.parts[0].text;
+            const chatData = await callGemini('gemini-3-flash-preview', chatPayload);
+
+            const aiText = chatData.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("").trim();
+            if (!aiText) throw new Error("No response from AI.");
             
             appendMessage(aiText, 'model');
 
             // 2. Convert response to Speech using Gemini TTS
-            const ttsUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${API_KEY}`;
             const ttsPayload = {
                 contents: [{ parts: [{ text: aiText }] }],
                 generationConfig: {
@@ -354,8 +403,7 @@
                 }
             };
 
-            const ttsRes = await fetch(ttsUrl, { method: 'POST', body: JSON.stringify(ttsPayload) });
-            const ttsData = await ttsRes.json();
+            const ttsData = await callGemini('gemini-2.5-flash-preview-tts', ttsPayload);
             
             const audioBase64 = ttsData.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
             if (!audioBase64) throw new Error("Failed to generate audio.");
@@ -454,10 +502,12 @@
             talkBtn.className = "group relative inline-flex items-center justify-center px-8 py-4 font-bold text-white transition-all duration-200 bg-blue-600 font-pj rounded-xl hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-600 shadow-[0_0_20px_rgba(37,99,235,0.4)] hover:shadow-[0_0_30px_rgba(37,99,235,0.6)]";
         }
 
+        let errorTimer = null;
         function showError(msg) {
             errorMessage.innerText = msg;
             errorToast.classList.remove('opacity-0', 'pointer-events-none');
-            setTimeout(() => {
+            clearTimeout(errorTimer);
+            errorTimer = setTimeout(() => {
                 errorToast.classList.add('opacity-0', 'pointer-events-none');
             }, 6000);
         }
