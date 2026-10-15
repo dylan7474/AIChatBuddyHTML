@@ -95,6 +95,7 @@
         <div class="flex items-center text-sm font-medium text-slate-300">
             <span id="status-indicator" class="status-dot status-idle"></span>
             <span id="status-text">Idle</span>
+            <i id="camera-icon" class="fa-solid fa-video ml-3 text-slate-600 hidden" title="Watching with the camera"></i>
             <button id="key-btn" class="ml-4 text-slate-400 hover:text-blue-400" title="Gemini API key"><i class="fa-solid fa-key"></i></button>
             <button id="settings-btn" class="ml-3 text-slate-400 hover:text-blue-400" title="Voice and settings"><i class="fa-solid fa-sliders"></i></button>
         </div>
@@ -114,7 +115,11 @@
         <label class="flex items-center gap-2" title="Off if the robot keeps cutting itself off (speakers too loud for the mic)">
             <input id="barge-in" type="checkbox" class="accent-blue-500"> Let me interrupt it
         </label>
-        <span class="text-xs text-slate-500">A new voice is used from the next conversation.</span>
+        <label class="flex items-center gap-2" title="It turns to look at you, notices when you come and go, and smiles back. The picture stays in this browser.">
+            <input id="camera-on" type="checkbox" class="accent-blue-500"> Watch me with the camera
+        </label>
+        <button id="look-at-me" class="hidden bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1" title="Sit as you usually do and look at the robot, then press this">Look at me</button>
+        <span class="text-xs text-slate-500">A new voice is used from the next conversation. The camera picture never leaves this browser.</span>
     </div>
 
     <!-- Main Content Area -->
@@ -251,6 +256,8 @@
         </section>
 
     </main>
+
+    <video id="camera-video" class="hidden" muted playsinline></video>
 
     <!-- Error Toast Notification -->
     <div id="error-toast" class="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg flex items-center space-x-3 opacity-0 pointer-events-none transition-opacity duration-300 z-50">
@@ -744,6 +751,7 @@
             sad:         { brow: [1, -12, 0], lidUp: 0.42, lidTilt: -0.25, smile: -0.7, pupil: 1.1, color: '#60a5fa', tilt: -3, droop: 1 },
             concerned:   { brow: [1, -8, 0], lidUp: 0.25, lidTilt: -0.15, smile: -0.3, color: '#a5b4fc' },
             embarrassed: { brow: [0, -4, 0], lidUp: 0.4, smile: 0.3, cheek: 0.85, color: '#fb7185', away: 1 },
+            sleepy:      { brow: [-1, -3, 0], lidUp: 0.62, smile: 0.05, pupil: 0.9, color: '#2b6c8c', droop: 0.7 },
             annoyed:     { brow: [-3, 12, 0], lidUp: 0.45, lidTilt: 0.3, smile: -0.4, color: '#f87171' },
         };
         const NEUTRAL = { brow: [0, 0, 0], lidUp: 0, lidTilt: 0, lidLow: 0, pupil: 1, smile: 0.12, cheek: 0, oh: 0, tilt: 0, laugh: 0, droop: 0, away: 0 };
@@ -782,6 +790,97 @@
             const x = hexRgb(a), y = hexRgb(b);
             return '#' + x.map((v, i) => Math.round(lerp(v, y[i], k)).toString(16).padStart(2, '0')).join('');
         }
+
+        // --- The camera: where the user's face is, whether they're there, whether they smile -------
+        // MediaPipe's face landmarker, in this browser; nothing from the camera is sent anywhere.
+        const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1';
+        const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+        const cameraOn = $('camera-on'), lookAtMe = $('look-at-me'), cameraIcon = $('camera-icon'), video = $('camera-video');
+        const cam = {
+            running: false, landmarker: null, stream: null, timer: 0, lastVideoTime: -1,
+            seen: 0,                    // performance.now() the face was last seen
+            pos: [0, 0],                // where it is, as a gaze (-1..1, the robot's own directions)
+            raw: [0.5, 0.45], size: 0.25, smile: 0,
+            centre: JSON.parse(store.get('buddyCamCentre', '[0.5,0.45]')),   // "Look at me": the face's spot when the robot looks straight at you
+            arrived: 0, left: 0,        // when they last appeared / went
+        };
+        cameraOn.checked = store.get('buddyCamera', '0') === '1';
+        cameraOn.addEventListener('change', () => {
+            store.set('buddyCamera', cameraOn.checked ? '1' : '0');
+            cameraOn.checked ? startCamera() : stopCamera();
+        });
+        lookAtMe.addEventListener('click', () => {
+            if (performance.now() - cam.seen > 500) return showError("I can't see your face just now.");
+            cam.centre = cam.raw.slice();
+            store.set('buddyCamCentre', JSON.stringify(cam.centre));
+            setExpression('happy', 0.6, 'notice');
+        });
+
+        async function startCamera() {
+            if (cam.running) return;
+            cam.running = true;
+            try {
+                cam.stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240, facingMode: 'user' } });
+                if (!cam.running) return stopCamera();
+                video.srcObject = cam.stream;
+                await video.play();
+                if (!cam.landmarker) {
+                    const { FaceLandmarker, FilesetResolver } = await import(`${MP}/vision_bundle.mjs`);
+                    const files = await FilesetResolver.forVisionTasks(`${MP}/wasm`);
+                    const opts = (delegate) => ({ baseOptions: { modelAssetPath: FACE_MODEL, delegate }, runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true });
+                    try { cam.landmarker = await FaceLandmarker.createFromOptions(files, opts('GPU')); }
+                    catch (e) { cam.landmarker = await FaceLandmarker.createFromOptions(files, opts('CPU')); }
+                }
+                if (!cam.running) return stopCamera();
+                cameraIcon.classList.remove('hidden');
+                lookAtMe.classList.remove('hidden');
+                cam.left = performance.now();
+                cam.timer = setInterval(watch, 66);
+            } catch (err) {
+                stopCamera();
+                cameraOn.checked = false;
+                store.set('buddyCamera', '0');
+                showError(err.name === 'NotAllowedError' ? 'The camera was not allowed.' : 'Camera: ' + err.message);
+            }
+        }
+        function stopCamera() {
+            cam.running = false;
+            clearInterval(cam.timer);
+            cam.stream?.getTracks().forEach(t => t.stop());
+            cam.stream = null;
+            video.srcObject = null;
+            cam.seen = 0; cam.smile = 0;
+            cameraIcon.classList.add('hidden');
+            lookAtMe.classList.add('hidden');
+        }
+        function watch() {
+            if (!cam.landmarker || video.readyState < 2 || video.currentTime === cam.lastVideoTime || document.hidden) return;
+            cam.lastVideoTime = video.currentTime;
+            const now = performance.now();
+            const r = cam.landmarker.detectForVideo(video, now);
+            const pts = r.faceLandmarks?.[0];
+            if (!pts) {
+                if (cam.seen && now - cam.seen > 1500 && cam.left < cam.seen) cam.left = now;   // they've gone
+                cameraIcon.classList.replace('text-emerald-400', 'text-slate-500');
+                return;
+            }
+            let x0 = 1, x1 = 0, y0 = 1, y1 = 0;
+            for (const q of pts) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
+            cam.raw = [(x0 + x1) / 2, (y0 + y1) / 2];
+            cam.size = x1 - x0;
+            // The camera's picture isn't mirrored: someone moving to their left goes right in it, and the robot,
+            // facing them, turns to its right -- which is the screen's left, as with the mouse
+            cam.pos = [Math.max(-1, Math.min(1, -(cam.raw[0] - cam.centre[0]) * 3.2)),
+                       Math.max(-1, Math.min(1, (cam.raw[1] - cam.centre[1]) * 3.2))];
+            const bs = r.faceBlendshapes?.[0]?.categories || [];
+            const score = (n) => bs.find(c => c.categoryName === n)?.score || 0;
+            cam.smile = (score('mouthSmileLeft') + score('mouthSmileRight')) / 2;
+            if (!cam.seen || now - cam.seen > 3000) cam.arrived = now;               // they've (re)appeared
+            cam.seen = now;
+            cameraIcon.classList.replace('text-slate-500', 'text-emerald-400');
+            cameraIcon.classList.replace('text-slate-600', 'text-emerald-400');
+        }
+        if (cameraOn.checked) startCamera();
 
         // --- The living face: blinks, gaze, head movement, listening, all every frame -------
         const life = {
@@ -877,11 +976,25 @@
                 : speaking ? 'speaking' : life.userTalking ? 'hearing' : life.awaiting ? 'thinking' : 'listening';
             showMood(mood);
 
-            // The expression: the model's (or the words'), then the mood's own, then neutral
+            // The camera: is the user there, did they just arrive, are they smiling
+            const watching = cam.running && !!cam.landmarker;
+            const present = watching && now - cam.seen < 700;
+            const away = watching && !present ? now - Math.max(cam.seen, cam.left) : 0;
+            if (present && now - cam.arrived < 400 && life.noticed !== cam.arrived) {
+                life.noticed = cam.arrived;                                   // "oh, hello": brows up, a blink, a quick smile
+                life.nextBlink = now + 120; life.nextSaccade = now;
+                if (!speaking) setExpression('happy', 0.55, 'notice');
+            }
+            life.userSmile = lerp(life.userSmile || 0, present ? cam.smile : 0, ease(0.35));   // (a beat behind, as people are)
+
+            // The expression: the model's (or the words'), then the mood's own, then neutral;
+            // a smile back when the user smiles at it, and dozing off when it's been left alone
             let name = 'neutral', k = 1;
             if (now < expr.until || (expr.from === 'model' && speaking)) { name = expr.name; k = expr.k; }
             else if (mood === 'thinking') { name = 'thinking'; k = 0.7; }
+            else if (life.userSmile > 0.35) { name = 'happy'; k = 0.3 + clamp01((life.userSmile - 0.35) / 0.4) * 0.6; }
             else if (mood === 'hearing' || mood === 'listening') { name = 'curious'; k = 0.25; }
+            else if (mood === 'off' && away > 20000) { name = 'sleepy'; k = 1; }
             const target = exprTargets(name, k);
             if (!life.face) life.face = target;
             const f = life.face, ke = ease(0.18);
@@ -893,19 +1006,25 @@
             // Gaze: follow the mouse while it moves; otherwise look about now and then, at the user while
             // they talk, up and to the side while thinking, down and away when embarrassed
             if (now > life.nextSaccade) {
-                let g;
-                if (now - life.mouseAt < 2500) g = life.mouse;
-                else if (mood === 'thinking' || name === 'thinking') g = [Math.random() < 0.5 ? -0.7 : 0.7, -0.6 + Math.random() * 0.2];
-                else if (f.away > 0.5) g = [0.6, 0.6];
-                else if (mood === 'hearing') g = [(Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.1];
-                else g = [(Math.random() - 0.5) * 0.7, (Math.random() - 0.5) * 0.4];
+                let g, hold;
+                const glanceAway = mood === 'thinking' || name === 'thinking' ? (present ? Math.random() < 0.6 : true) : false;
+                if (glanceAway) { g = [Math.random() < 0.5 ? -0.7 : 0.7, -0.6 + Math.random() * 0.2]; hold = 700 + Math.random() * 700; }
+                else if (f.away > 0.5) { g = [0.6, 0.6]; hold = 1200; }
+                else if (present) {                                             // at the user's face, with small flicks round it
+                    const jit = mood === 'hearing' ? 0.05 : 0.09;
+                    g = [cam.pos[0] + (Math.random() - 0.5) * jit, cam.pos[1] + (Math.random() - 0.5) * jit];
+                    hold = 150;                                                 // (re-aimed often, so it follows them)
+                }
+                else if (now - life.mouseAt < 2500) { g = life.mouse; hold = 60; }
+                else if (name === 'sleepy') { g = [0, 0.5]; hold = 3000; }
+                else if (away > 0) { g = [(Math.random() - 0.5) * 1.8, (Math.random() - 0.5) * 0.6]; hold = 500 + Math.random() * 900; }   // looking about for them
+                else if (mood === 'hearing') { g = [(Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.1]; hold = 900 + Math.random() * 1500; }
+                else { g = [(Math.random() - 0.5) * 0.7, (Math.random() - 0.5) * 0.4]; hold = 700 + Math.random() * 2600; }
                 life.gazeTarget = g;
-                const hold = now - life.mouseAt < 2500 ? 60 : mood === 'hearing' ? 900 + Math.random() * 1500
-                    : mood === 'thinking' ? 900 + Math.random() * 700 : 700 + Math.random() * 2600;
                 if (Math.hypot(g[0] - life.gaze[0], g[1] - life.gaze[1]) > 0.6 && Math.random() < 0.35) life.nextBlink = now;   // big glances often come with a blink
                 life.nextSaccade = now + hold;
             }
-            const kg = ease(now - life.mouseAt < 2500 ? 0.08 : 0.035);               // saccades: quick
+            const kg = ease(present ? 0.06 : now - life.mouseAt < 2500 ? 0.08 : 0.035);   // saccades: quick
             life.gaze = [lerp(life.gaze[0], life.gazeTarget[0], kg), lerp(life.gaze[1], life.gazeTarget[1], kg)];
 
             // Blinks: every 2-6 s, now and then a double; 140 ms each
@@ -950,7 +1069,8 @@
             const pupil = `translate(${(life.gaze[0] * 7).toFixed(2)}px, ${(life.gaze[1] * 7).toFixed(2)}px)`;
             for (const [p, cx] of [[el.pupilL, 145], [el.pupilR, 255]]) {
                 p.style.transformOrigin = `${cx}px 140px`;
-                p.style.transform = `${pupil} scale(${f.pupil.toFixed(3)})`;
+                const near = present ? Math.max(-0.08, Math.min(0.12, (cam.size - 0.3) * 0.5)) : 0;   // closer: a little more interested
+                p.style.transform = `${pupil} scale(${(f.pupil + near).toFixed(3)})`;
             }
             const close = Math.max(f.lidUp, blink), low = f.lidLow * (1 - blink * 0.5);
             const [lu, ll] = lidPaths(EYE.l, close, f.lidTilt, low), [ru, rl] = lidPaths(EYE.r, close, f.lidTilt, low);

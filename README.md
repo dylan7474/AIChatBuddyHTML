@@ -18,6 +18,12 @@ The sliders icon opens the settings: the **voice** (used from the next conversat
 interrupt it**. Turn that off if the robot keeps cutting itself off: its own voice from loud speakers
 is reaching the microphone. Headphones avoid that altogether.
 
+**Watch me with the camera** (also in the settings, off until you turn it on): the robot turns to keep
+looking at you, notices when you sit down, looks about for you when you leave (and dozes off if you're
+gone a while), and smiles back when you smile. The picture is read in your browser by Google's MediaPipe
+face tracker and never sent anywhere, Gemini included. If it seems to look past you, sit as you usually
+do, look at it, and press **Look at me**.
+
 ## How it works
 
 - **Gemini Live** (`gemini-3.8-live`): one WebSocket for the whole conversation. The microphone is
