@@ -59,3 +59,5 @@ Tested in Chrome; it uses nothing Chrome-only, so Edge, Firefox and Safari shoul
 - `basic.html`: an earlier, simpler version (press to talk; a reply, then its voice), opened at
   https://dylan7474.github.io/AIChatBuddyHTML/basic.html. It remembers the conversation
   and asks for the API key the same way.
+
+What might come next: [ROADMAP.md](ROADMAP.md).
