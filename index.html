@@ -118,6 +118,7 @@
         <label class="flex items-center gap-2" title="It turns to look at you, notices when you come and go, and smiles back. The picture stays in this browser.">
             <input id="camera-on" type="checkbox" class="accent-blue-500"> Watch me with the camera
         </label>
+        <button id="memory-btn" class="bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1"><i class="fa-solid fa-brain mr-1"></i>What I remember</button>
         <button id="look-at-me" class="hidden bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1" title="Sit as you usually do and look at the robot, then press this">Look at me</button>
         <span class="text-xs text-slate-500">A new voice is used from the next conversation. The camera picture never leaves this browser.</span>
     </div>
@@ -259,6 +260,25 @@
 
     <video id="camera-video" class="hidden" muted playsinline></video>
 
+    <!-- What the robot remembers about the user -->
+    <div id="memory-panel" class="hidden fixed inset-0 z-40 bg-slate-950/70 flex items-center justify-center p-4">
+        <div class="w-full max-w-xl bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl p-5 flex flex-col gap-3 text-sm text-slate-300">
+            <div class="flex items-center justify-between">
+                <h2 class="text-lg font-bold text-white"><i class="fa-solid fa-brain mr-2 text-blue-400"></i>What I remember about you</h2>
+                <button id="memory-close" class="text-slate-400 hover:text-white text-lg" title="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="text-xs text-slate-400">After each conversation Gemini updates these notes, and I read them at the start of the next one.
+                They're kept only in this browser. Change anything you like.</p>
+            <textarea id="memory-text" rows="12" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-100 font-mono text-xs focus:outline-none focus:border-blue-500" placeholder="Nothing yet. Have a chat!"></textarea>
+            <div class="flex flex-wrap items-center gap-3">
+                <label class="flex items-center gap-2 mr-auto"><input id="memory-on" type="checkbox" class="accent-blue-500"> Remember our conversations</label>
+                <span id="memory-status" class="text-xs text-slate-500"></span>
+                <button id="memory-forget" class="bg-slate-700 hover:bg-rose-600 rounded-lg px-3 py-1">Forget everything</button>
+                <button id="memory-save" class="bg-blue-600 hover:bg-blue-500 text-white rounded-lg px-3 py-1">Save</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Error Toast Notification -->
     <div id="error-toast" class="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg flex items-center space-x-3 opacity-0 pointer-events-none transition-opacity duration-300 z-50">
         <i class="fa-solid fa-triangle-exclamation"></i>
@@ -280,6 +300,9 @@
             "Your face shows how you feel: call set_expression whenever your mood changes, just before you say the thing that changes it " +
             "(happy when pleased, laughing at something funny, surprised, curious, thinking while you work something out, sad or concerned at bad news, " +
             "embarrassed, annoyed, excited). Never mention the function or your expressions out loud.";
+        const LOOK_NOTE = " You can see through the user's camera with the look tool: use it when they ask you to look at something, " +
+            "show you something, or ask how they look, then talk about what you see. Don't use it otherwise.";
+        const SUMMARY_MODEL = 'gemini-3.8-flash';   // keeps the notes about the user, after each conversation
 
         const $ = (id) => document.getElementById(id);
         const avatar = $('avatar'), talkBtn = $('talk-btn'), talkBtnText = $('talk-btn-text'), talkBtnIcon = $('talk-btn-icon');
@@ -346,6 +369,8 @@
 
         function endConversation() {
             if (talk) {
+                savePending();
+                updateMemory();
                 talk.ended = true;
                 try { talk.ws?.close(1000); } catch (e) {}
                 talk.mic?.stop();
@@ -363,7 +388,7 @@
                     responseModalities: ['AUDIO'],
                     speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceSelect.value } } },
                 },
-                systemInstruction: { parts: [{ text: toolMode < 2 ? PERSONA : PERSONA.replace(/ Your face shows.*$/, '') }] },
+                systemInstruction: { parts: [{ text: (toolMode < 2 ? PERSONA + LOOK_NOTE : PERSONA.replace(/ Your face shows.*$/, '')) + memoryForPrompt() }] },
                 inputAudioTranscription: {},
                 outputAudioTranscription: {},
                 realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } },
@@ -384,7 +409,12 @@
                     },
                 };
                 if (toolMode === 0) fn.behavior = 'NON_BLOCKING';   // the voice carries on while the face changes
-                setup.tools = [{ functionDeclarations: [fn] }];
+                const look = {
+                    name: 'look',
+                    description: "Takes a picture with the user's camera so you can see them, or what they're showing you. " +
+                        'The picture arrives as your video input.',
+                };
+                setup.tools = [{ functionDeclarations: [fn, look] }];
             }
             return { setup };
         }
@@ -444,16 +474,18 @@
                 if (resumeHandle) { const old = talk.ws; openSocket(); setTimeout(() => { try { old.close(1000); } catch (e) {} }, 2000); }
             }
             if (msg.toolCall?.functionCalls) {
-                const responses = [];
                 for (const call of msg.toolCall.functionCalls) {
+                    const reply = (response) => send({ toolResponse: { functionResponses: [{ id: call.id, name: call.name, response }] } });
                     if (call.name === 'set_expression') {
                         setExpression(call.args?.expression, call.args?.intensity, 'model');
-                        responses.push({ id: call.id, name: call.name, response: { result: 'ok', scheduling: 'SILENT' } });
+                        reply({ result: 'ok', scheduling: 'SILENT' });
+                    } else if (call.name === 'look') {
+                        lookNow().then((ok) => reply(ok ? { result: 'The picture is in your video input now.' }
+                                                         : { error: "The camera isn't available, so you can't see anything." }));
                     } else {
-                        responses.push({ id: call.id, name: call.name, response: { error: 'unknown function' } });
+                        reply({ error: 'unknown function' });
                     }
                 }
-                send({ toolResponse: { functionResponses: responses } });
             }
             const sc = msg.serverContent;
             if (!sc) return;
@@ -478,6 +510,7 @@
                 expressionFromWords(sc.outputTranscription.text);
             }
             if (sc.turnComplete) {
+                savePending();
                 closeModelBubble(false);
                 life.awaiting = 0;
                 life.turnEnded = performance.now();
@@ -703,7 +736,12 @@
             const gap = now - last;
             const back = pick(WELCOME_BACK.find(([limit]) => gap < limit)[1]);
             const days = Math.floor(gap / 86400e3);
-            return note + `"${back} ${opener}"` + (days >= 2 ? ` (it's been ${days} days since you last talked)` : '') + ']';
+            const since = days >= 2 ? ` (it's been ${days} days since you last talked)` : '';
+            if (remembering() && getMemory() && Math.random() < 0.6) {   // something personal from what it remembers
+                return note + `"${back}", then ask about something from what you remember about them (a follow-up is best);` +
+                    ` if nothing fits, "${opener}"` + since + ']';
+            }
+            return note + `"${back} ${opener}"` + since + ']';
         }
 
         function greet() {
@@ -895,6 +933,7 @@
                 bubbles[who] = b;
             }
             bubbles[who].textContent += text;
+            logLine(who, text);
             chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: 'smooth' });
         }
         function closeUserBubble() { bubbles.user = null; }
@@ -1006,7 +1045,7 @@
         const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
         const cameraOn = $('camera-on'), lookAtMe = $('look-at-me'), cameraIcon = $('camera-icon'), video = $('camera-video');
         const cam = {
-            running: false, landmarker: null, stream: null, timer: 0, lastVideoTime: -1,
+            running: false, tracker: null, busy: false, stream: null, timer: 0, lastVideoTime: -1,
             seen: 0,                    // performance.now() the face was last seen
             pos: [0, 0],                // where it is, as a gaze (-1..1, the robot's own directions)
             raw: [0.5, 0.45], size: 0.25, smile: 0,
@@ -1029,17 +1068,11 @@
             if (cam.running) return;
             cam.running = true;
             try {
-                cam.stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240, facingMode: 'user' } });
+                cam.stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' } });
                 if (!cam.running) return stopCamera();
                 video.srcObject = cam.stream;
                 await video.play();
-                if (!cam.landmarker) {
-                    const { FaceLandmarker, FilesetResolver } = await import(`${MP}/vision_bundle.mjs`);
-                    const files = await FilesetResolver.forVisionTasks(`${MP}/wasm`);
-                    const opts = (delegate) => ({ baseOptions: { modelAssetPath: FACE_MODEL, delegate }, runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true });
-                    try { cam.landmarker = await FaceLandmarker.createFromOptions(files, opts('GPU')); }
-                    catch (e) { cam.landmarker = await FaceLandmarker.createFromOptions(files, opts('CPU')); }
-                }
+                if (!cam.tracker) cam.tracker = await makeTracker();
                 if (!cam.running) return stopCamera();
                 cameraIcon.classList.remove('hidden');
                 lookAtMe.classList.remove('hidden');
@@ -1062,34 +1095,241 @@
             cameraIcon.classList.add('hidden');
             lookAtMe.classList.add('hidden');
         }
-        function watch() {
-            if (!cam.landmarker || video.readyState < 2 || video.currentTime === cam.lastVideoTime || document.hidden) return;
+        // Where the face is (its box, 0..1 of the picture) and how much it smiles, from the landmarker's result.
+        // (Also run inside the worker: it's copied there as source.)
+        function faceOf(r) {
+            const pts = r && r.faceLandmarks && r.faceLandmarks[0];
+            if (!pts) return null;
+            let x0 = 1, x1 = 0, y0 = 1, y1 = 0;
+            for (const q of pts) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
+            const bs = (r.faceBlendshapes && r.faceBlendshapes[0] && r.faceBlendshapes[0].categories) || [];
+            const score = (n) => (bs.find(c => c.categoryName === n) || { score: 0 }).score;
+            return { box: [x0, x1, y0, y1], smile: (score('mouthSmileLeft') + score('mouthSmileRight')) / 2 };
+        }
+        // The tracker runs in a worker, so loading it (a few seconds' work) and each look at the picture never
+        // hold up the page; where workers can't run it, on the page itself.
+        async function makeTracker() {
+            const options = (delegate, extra = {}) => ({ baseOptions: { modelAssetPath: FACE_MODEL, delegate },
+                runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true, ...extra });
+            try {
+                const src = `
+                    import { FaceLandmarker, FilesetResolver } from '${MP}/vision_bundle.mjs';
+                    ${faceOf.toString()}
+                    const options = ${options.toString()};
+                    const FACE_MODEL = '${FACE_MODEL}';
+                    let lm = null;
+                    self.onmessage = async ({ data }) => {
+                        if (data.init) {
+                            try {
+                                const files = await FilesetResolver.forVisionTasks('${MP}/wasm', true);
+                                try { lm = await FaceLandmarker.createFromOptions(files, options('GPU', { canvas: new OffscreenCanvas(1, 1) })); }
+                                catch (e) { lm = await FaceLandmarker.createFromOptions(files, options('CPU')); }
+                                self.postMessage({ ready: true });
+                            } catch (e) { self.postMessage({ failed: String((e && e.message) || e) }); }
+                            return;
+                        }
+                        let face = null;
+                        try { face = faceOf(lm.detectForVideo(data.frame, data.t)); } catch (e) {}
+                        data.frame.close();
+                        self.postMessage({ face });
+                    };`;
+                const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })), { type: 'module' });
+                await new Promise((ok, fail) => {
+                    w.onmessage = (e) => e.data.ready ? ok() : fail(new Error(e.data.failed));
+                    w.onerror = (e) => fail(new Error(e.message || 'the worker failed to start'));
+                    setTimeout(() => fail(new Error('timed out')), 60000);
+                    w.postMessage({ init: true });
+                });
+                let answer = null;
+                w.onmessage = (e) => { answer?.(e.data.face); answer = null; };
+                return {
+                    async detect(v, t) {
+                        const frame = await createImageBitmap(v);
+                        return new Promise((r) => { answer = r; w.postMessage({ frame, t }, [frame]); });
+                    },
+                };
+            } catch (err) {
+                console.warn('Face tracker: running on the page (' + err.message + ')');
+                const { FaceLandmarker, FilesetResolver } = await import(`${MP}/vision_bundle.mjs`);
+                const files = await FilesetResolver.forVisionTasks(`${MP}/wasm`);
+                let lm;
+                try { lm = await FaceLandmarker.createFromOptions(files, options('GPU')); }
+                catch (e) { lm = await FaceLandmarker.createFromOptions(files, options('CPU')); }
+                return { async detect(v, t) { return faceOf(lm.detectForVideo(v, t)); } };
+            }
+        }
+        async function watch() {
+            if (!cam.tracker || cam.busy || video.readyState < 2 || video.currentTime === cam.lastVideoTime || document.hidden) return;
             cam.lastVideoTime = video.currentTime;
+            cam.busy = true;                                      // (one picture at a time)
+            let face = null;
+            try { face = await cam.tracker.detect(video, performance.now()); } catch (e) {}
+            cam.busy = false;
+            if (!cam.running) return;
             const now = performance.now();
-            const r = cam.landmarker.detectForVideo(video, now);
-            const pts = r.faceLandmarks?.[0];
-            if (!pts) {
+            if (!face) {
                 if (cam.seen && now - cam.seen > 1500 && cam.left < cam.seen) cam.left = now;   // they've gone
                 cameraIcon.classList.replace('text-emerald-400', 'text-slate-500');
                 return;
             }
-            let x0 = 1, x1 = 0, y0 = 1, y1 = 0;
-            for (const q of pts) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
+            const [x0, x1, y0, y1] = face.box;
             cam.raw = [(x0 + x1) / 2, (y0 + y1) / 2];
             cam.size = x1 - x0;
             // The camera's picture isn't mirrored: someone moving to their left goes right in it, and the robot,
             // facing them, turns to its right -- which is the screen's left, as with the mouse
             cam.pos = [Math.max(-1, Math.min(1, -(cam.raw[0] - cam.centre[0]) * 3.2)),
                        Math.max(-1, Math.min(1, (cam.raw[1] - cam.centre[1]) * 3.2))];
-            const bs = r.faceBlendshapes?.[0]?.categories || [];
-            const score = (n) => bs.find(c => c.categoryName === n)?.score || 0;
-            cam.smile = (score('mouthSmileLeft') + score('mouthSmileRight')) / 2;
+            cam.smile = face.smile;
             if (!cam.seen || now - cam.seen > 3000) cam.arrived = now;               // they've (re)appeared
             cam.seen = now;
             cameraIcon.classList.replace('text-slate-500', 'text-emerald-400');
             cameraIcon.classList.replace('text-slate-600', 'text-emerald-400');
         }
         if (cameraOn.checked) startCamera();
+
+        // --- Memory: short notes about the user, kept in this browser between conversations ---------
+        // Each conversation's transcript is kept as it goes ("pending", so closing the tab loses nothing);
+        // afterwards Gemini folds it into the notes, which go into the next conversation's instructions.
+        const memoryText = $('memory-text'), memoryOn = $('memory-on'), memoryStatus = $('memory-status');
+        const remembering = () => store.get('buddyRemember', '1') === '1';
+        const getMemory = () => store.get('buddyMemory', '').trim();
+        function memoryForPrompt() {
+            const m = remembering() ? getMemory() : '';
+            return m ? "\n\nWhat you remember about the user from earlier conversations (use it naturally when it fits; " +
+                "don't recite it, and don't say you have notes):\n" + m : '';
+        }
+        function logLine(who, text) {
+            if (!talk) return;
+            const log = talk.log || (talk.log = []);
+            const last = log[log.length - 1];
+            if (last && last.who === who && !last.closed) last.text += text;
+            else log.push({ who, text });
+        }
+        function savePending() {
+            if (!talk?.log?.length || !remembering()) return;
+            talk.log.forEach(l => { l.closed = true; });
+            let all = [];
+            try { all = JSON.parse(store.get('buddyPending', '[]')); } catch (e) {}
+            if (!talk.pendingAt) { talk.pendingAt = Date.now(); all.push({ at: talk.pendingAt, log: [] }); }
+            const mine = all.find(c => c.at === talk.pendingAt);
+            if (mine) mine.log = talk.log.map(({ who, text }) => ({ who, text: text.trim() }));
+            store.set('buddyPending', JSON.stringify(all.slice(-5)));
+        }
+        let memoryBusy = false;
+        async function updateMemory() {
+            if (memoryBusy || !remembering() || !getApiKey()) return;
+            let pending = [];
+            try { pending = JSON.parse(store.get('buddyPending', '[]')); } catch (e) {}
+            const worth = pending.filter(c => c.log.some(l => l.who === 'user' && l.text.length > 2));
+            if (!worth.length) { store.set('buddyPending', '[]'); return; }
+            memoryBusy = true;
+            memoryStatus.innerText = 'Updating…';
+            const day = (t) => new Date(t).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+            const convs = worth.map(c => `Conversation on ${day(c.at)}:\n` +
+                c.log.map(l => `${l.who === 'user' ? 'User' : 'Robot'}: ${l.text}`).join('\n')).join('\n\n');
+            const prompt = `Today is ${day(Date.now())}.\n\nCurrent notes:\n${getMemory() || '(none yet)'}\n\n${convs}\n\nReturn the updated notes.`;
+            try {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${SUMMARY_MODEL}:generateContent?key=${encodeURIComponent(getApiKey())}`;
+                const res = await fetch(url, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        systemInstruction: { parts: [{ text:
+                            "You keep short notes about a person for their friendly robot companion, who reads them before each chat. " +
+                            "Merge what's new from the conversations into the current notes. Rules: plain lines starting with '- ', at most 25; " +
+                            "first '- Name: ...' if known; lasting facts (interests, projects, people and pets in their life, likes and dislikes); " +
+                            "'- Recently: ... (date)' for the last few topics, keeping only the newest 5; '- Follow up: ... (date)' for things coming up " +
+                            "that the robot could ask about later, dropping ones more than a week past. Leave out anything sensitive (health, money, " +
+                            "passwords, addresses, other people's private details) unless the person asked to have it remembered. Keep what's still true, " +
+                            "fix what's changed. Write only the notes." }] },
+                        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                        generationConfig: { temperature: 0.3, maxOutputTokens: 1200 },
+                    }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error?.message || `Gemini returned ${res.status}`);
+                const notes = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
+                if (!notes) throw new Error('no notes came back');
+                store.set('buddyMemory', notes.split('\n').filter(l => l.trim()).slice(0, 30).join('\n'));
+                // Only the conversations just summarised go; one still going keeps its place
+                let now = [];
+                try { now = JSON.parse(store.get('buddyPending', '[]')); } catch (e) {}
+                store.set('buddyPending', JSON.stringify(now.filter(c => !worth.some(w => w.at === c.at) || c.at === talk?.pendingAt)));
+                memoryStatus.innerText = 'Updated';
+                if (!memoryPanel.classList.contains('hidden')) memoryText.value = getMemory();
+            } catch (err) {
+                memoryStatus.innerText = "Couldn't update: " + err.message;    // (tried again after the next conversation)
+            } finally {
+                memoryBusy = false;
+            }
+        }
+        // The panel
+        const memoryPanel = $('memory-panel');
+        $('memory-btn').addEventListener('click', () => {
+            memoryText.value = getMemory();
+            memoryOn.checked = remembering();
+            memoryPanel.classList.remove('hidden');
+        });
+        $('memory-close').addEventListener('click', () => memoryPanel.classList.add('hidden'));
+        memoryPanel.addEventListener('click', (e) => { if (e.target === memoryPanel) memoryPanel.classList.add('hidden'); });
+        $('memory-save').addEventListener('click', () => {
+            store.set('buddyMemory', memoryText.value.trim());
+            memoryStatus.innerText = 'Saved (used from the next conversation)';
+        });
+        $('memory-forget').addEventListener('click', () => {
+            store.set('buddyMemory', '');
+            store.set('buddyPending', '[]');
+            memoryText.value = '';
+            memoryStatus.innerText = 'Forgotten';
+        });
+        memoryOn.addEventListener('change', () => {
+            store.set('buddyRemember', memoryOn.checked ? '1' : '0');
+            if (!memoryOn.checked) store.set('buddyPending', '[]');
+        });
+        updateMemory();       // a conversation left unsummarised last time (the tab was closed)
+
+        // --- Look: one picture from the camera, when Gemini asks for it -----------------------------
+        async function takePicture() {
+            let stream = null, v = video;
+            try {
+                if (!(cam.running && video.readyState >= 2)) {          // the tracking camera's off: open it just for this
+                    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' } });
+                    v = document.createElement('video');
+                    v.muted = true; v.playsInline = true; v.srcObject = stream;
+                    await v.play();
+                    await new Promise(r => setTimeout(r, 400));             // (the first frames are often dark)
+                }
+                const c = document.createElement('canvas');
+                const scale = Math.min(1, 640 / (v.videoWidth || 640));
+                c.width = Math.round((v.videoWidth || 640) * scale);
+                c.height = Math.round((v.videoHeight || 480) * scale);
+                c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+                return c.toDataURL('image/jpeg', 0.8);
+            } catch (err) {
+                return null;
+            } finally {
+                stream?.getTracks().forEach(t => t.stop());
+            }
+        }
+        async function lookNow() {
+            setExpression('curious', 0.9, 'model');                    // eyes wide, a "shutter" blink
+            life.nextBlink = performance.now() + 150;
+            const url = await takePicture();
+            if (!url || !talk) return false;
+            send({ realtimeInput: { video: { mimeType: 'image/jpeg', data: url.split(',')[1] } } });
+            // Show the user exactly what was sent
+            closeModelBubble(false);
+            const row = document.createElement('div');
+            row.className = 'flex w-full justify-start';
+            row.innerHTML = '<figure class="max-w-[60%] bg-slate-700/60 rounded-2xl rounded-tl-none p-2 shadow-md">' +
+                '<img class="rounded-xl w-full" alt="What the robot saw"><figcaption class="text-xs text-slate-400 mt-1 px-1">' +
+                '<i class="fa-solid fa-camera mr-1"></i>What I saw</figcaption></figure>';
+            row.querySelector('img').src = url;
+            chatLog.appendChild(row);
+            chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: 'smooth' });
+            logLine('user', ' [showed the robot something on the camera] ');
+            return true;
+        }
+
 
         // --- The living face: blinks, gaze, head movement, listening, all every frame -------
         const life = {
@@ -1186,7 +1426,7 @@
             showMood(mood);
 
             // The camera: is the user there, did they just arrive, are they smiling
-            const watching = cam.running && !!cam.landmarker;
+            const watching = cam.running && !!cam.tracker;
             const present = watching && now - cam.seen < 700;
             const away = watching && !present ? now - Math.max(cam.seen, cam.left) : 0;
             if (present && now - cam.arrived < 400 && life.noticed !== cam.arrived) {

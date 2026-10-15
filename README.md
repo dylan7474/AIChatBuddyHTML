@@ -21,7 +21,8 @@ is reaching the microphone. Headphones avoid that altogether.
 **Watch me with the camera** (also in the settings, off until you turn it on): the robot turns to keep
 looking at you, notices when you sit down, looks about for you when you leave (and dozes off if you're
 gone a while), and smiles back when you smile. The picture is read in your browser by Google's MediaPipe
-face tracker and never sent anywhere, Gemini included. If it seems to look past you, sit as you usually
+face tracker (in a background worker, so the page never stalls) and never sent anywhere, Gemini included;
+only a picture the robot takes with *look* is sent. If it seems to look past you, sit as you usually
 do, look at it, and press **Look at me**.
 
 ## How it works
@@ -30,6 +31,14 @@ do, look at it, and press **Look at me**.
   streamed as 16 kHz audio; the reply streams back as 24 kHz audio and starts playing as it arrives.
   Gemini hears when you start and stop talking, and stops when you talk over it. Transcripts of both
   sides fill the chat. A dropped connection, or the session's time limit, reconnects where it was.
+- **Memory**: after each conversation Gemini updates a few notes about you (your name, what you're into,
+  recent topics, things coming up to ask about), and the robot reads them at the start of the next one,
+  so it can ask how things went. **What I remember** in the settings shows the notes: edit them, wipe them,
+  or turn remembering off. They're kept only in your browser (the conversation itself goes to Gemini, as
+  every conversation does).
+- **Look**: ask "can you see this?" or "what do you think of my hat?" and the robot takes one picture
+  with your camera (it opens it just for that if *Watch me* is off) and talks about it. The picture it
+  sent appears in the chat, so you always see exactly what it saw.
 - **The face**: Gemini sets its expression with a `set_expression` tool (happy, excited, laughing,
   surprised, curious, thinking, sad, concerned, embarrassed, annoyed); when it doesn't, the face takes
   a cue from its words. Eyelids, LED brows, blush, mouth corners and colour all change with it.
