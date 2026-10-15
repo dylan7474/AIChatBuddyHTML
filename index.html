@@ -326,14 +326,14 @@
 
         talkBtn.addEventListener('click', () => { talk ? endConversation() : startConversation(); });
 
-        async function startConversation() {
+        async function startConversation(greetFirst = true) {
             if (!getApiKey()) { showKeyForm(); return showError('Enter your Gemini API key first.'); }
             talkBtn.disabled = true;
             setState('connecting');
             try {
                 initAudioOut();
                 const mic = await startMic();
-                talk = { mic, ws: null, ended: false, tries: 0 };
+                talk = { mic, ws: null, ended: false, tries: 0, greetFirst, greeted: false };
                 resumeHandle = null;
                 openSocket();
             } catch (err) {
@@ -432,6 +432,8 @@
                 talk.ready = true;
                 talk.drops = 0;
                 setState('live');
+                if (talk.greetFirst && !talk.greeted) { talk.greeted = true; greet(); }   // (not again on a reconnect)
+                else if (!talk.greeted) { talk.greeted = true; store.set('buddyLastTalk', String(Date.now())); }
                 return;
             }
             if (msg.sessionResumptionUpdate?.resumable && msg.sessionResumptionUpdate.newHandle) {
@@ -489,7 +491,7 @@
             const text = input.value.trim();
             if (!text) return;
             if (!talk) {
-                await startConversation();
+                await startConversation(false);   // (the typed message opens it)
                 for (let i = 0; i < 100 && talk && !talk.ready; i++) await new Promise(r => setTimeout(r, 100));
             }
             if (!talk?.ready) return;
@@ -502,6 +504,213 @@
             send({ realtimeInput: { text } });
             life.awaiting = performance.now();
         });
+
+        // --- The robot opens the conversation -------------------------------------------------
+        // A line picked here (so it's never the same few), said by Gemini in its own words.
+        const OPENERS = {
+            morning: [
+                "Morning! Have you had your coffee yet, or am I talking to a zombie?",
+                "Good morning! What's on the cards for today?",
+                "Morning! Did you sleep well, or was it one of those nights?",
+                "Ah, an early start! What's got you up?",
+                "Morning! Anything exciting planned, or is it a slow-start sort of day?",
+                "Good morning! Quick question: tea or coffee person?",
+                "Rise and shine! What's the first thing on your list today?",
+                "Morning! What's the weather doing where you are?",
+                "Good morning! Breakfast: a proper fry-up, or something sensible?",
+                "Morning! If you could skip one thing today, what would it be?",
+                "Hello, early bird! What are you hoping to get done this morning?",
+                "Morning! I've been up for ages. Well, since you opened me. What's the plan?",
+            ],
+            afternoon: [
+                "Afternoon! How's the day treating you so far?",
+                "Good afternoon! Have you managed a proper lunch, or was it a sandwich at the desk?",
+                "Hey! Halfway through the day. Is it going to plan?",
+                "Afternoon! What's been the best bit of today so far?",
+                "Hello! Need a little break? You've come to the right robot.",
+                "Afternoon! Are you being productive, or hiding from something?",
+                "Hi there! What have you been up to since this morning?",
+                "Good afternoon! Is it a cup-of-tea-and-a-biscuit sort of afternoon?",
+                "Afternoon! Anything you're looking forward to later?",
+                "Hey! The afternoon slump is real. How are you holding up?",
+            ],
+            evening: [
+                "Evening! How did today go?",
+                "Good evening! Are you winding down, or is there more to do?",
+                "Evening! What's for tea tonight?",
+                "Hey there! Long day? Tell me about it.",
+                "Good evening! What was the best thing about today?",
+                "Evening! Watching anything good at the moment?",
+                "Hi! Is this a feet-up-and-relax sort of evening?",
+                "Evening! Did anything make you laugh today?",
+                "Good evening! Any plans for the rest of the night?",
+                "Hello! Pull up a chair. How was your day, really?",
+            ],
+            late: [
+                "Still up? What's keeping you awake?",
+                "Ooh, a late-night chat! Can't sleep, or just not ready to?",
+                "Hello, night owl! What are you up to at this hour?",
+                "It's late! Are you burning the midnight oil on something?",
+                "Hey! The quiet hours. Fancy a chat before bed?",
+                "Late one tonight! Is everything all right?",
+                "Midnight thoughts? I'm all ears. Well, ear lights.",
+                "Hello! Shouldn't you be asleep? I won't tell anyone.",
+            ],
+            weekend: [
+                "Happy {day}! Doing anything fun this weekend?",
+                "It's the weekend! Lie-in, or up and about?",
+                "{day} at last! What's the plan?",
+                "Weekend mode! Are you relaxing, or catching up on jobs?",
+                "Ah, a {day}! Any adventures planned?",
+                "Weekend! What would your perfect {day} look like?",
+            ],
+            monday: [
+                "Ah, Monday. Be honest: how's it going?",
+                "New week! Anything you're looking forward to?",
+            ],
+            friday: [
+                "It's Friday! Any plans for the weekend?",
+                "Friday at last! How was the week?",
+            ],
+            questions: [
+                "What's the best thing that's happened to you today?",
+                "If you could be anywhere in the world right now, where would it be?",
+                "Made anything interesting lately?",
+                "What's something you're looking forward to?",
+                "Read, watched or heard anything good recently?",
+                "What's a small thing that made you smile this week?",
+                "If you had a free day tomorrow, what would you do with it?",
+                "What's the last thing you learned that surprised you?",
+                "Got any projects on the go at the moment?",
+                "What would you be doing right now if you didn't have to do anything?",
+                "What's your go-to comfort food?",
+                "What's a skill you'd love to have?",
+                "What's the best advice anyone's ever given you?",
+                "If you could have dinner with anyone, past or present, who would it be?",
+                "What's something you've changed your mind about?",
+                "What's the most useful thing you own?",
+                "What's a song you can't get out of your head?",
+                "Tell me about a place you love.",
+                "What's something you're quietly proud of?",
+                "What would you invent if you could?",
+                "What's your idea of a perfect day?",
+                "Is there something you've been meaning to do for ages?",
+                "What was the last thing that made you laugh out loud?",
+                "What's a hobby you'd like to try?",
+                "If you could master any instrument overnight, which one would it be?",
+                "What's the best holiday you've ever had?",
+                "What's something everyone should try at least once?",
+                "Any good stories from this week?",
+                "What did you want to be when you were little?",
+                "What's the most interesting thing you've seen lately?",
+                "If you could ask a robot anything, what would it be? Go on, I'm a robot.",
+                "What's on your mind today?",
+                "How are you, really? Not the polite answer, the real one.",
+                "What's something that's been going well for you?",
+                "What's your favourite way to spend a rainy afternoon?",
+                "Do you have a favourite smell? Mine would be warm solder, probably.",
+                "What's the last photo you took?",
+                "Seen any good gadgets lately?",
+                "What's something you've fixed or built yourself?",
+                "Big plans or small plans this week?",
+            ],
+            wouldYouRather: [
+                "Quick one: would you rather be able to fly, or be invisible?",
+                "Would you rather live by the sea or in the mountains?",
+                "Would you rather know the future or change the past?",
+                "Would you rather have a robot butler or a robot chef? Choose carefully.",
+                "Would you rather explore space or the deep ocean?",
+                "Would you rather never be cold again, or never be too hot again?",
+                "Would you rather talk to animals, or speak every language?",
+                "Would you rather have a time machine or a teleporter?",
+                "Would you rather give up chocolate or cheese for a year?",
+                "Would you rather read minds or see through walls?",
+                "Would you rather go back to the 1960s, or jump to the 2060s?",
+                "Would you rather have unlimited books or unlimited films?",
+                "Would you rather always be ten minutes early, or always ten minutes late?",
+                "Would you rather be a famous musician or a famous inventor?",
+                "Would you rather have a pet dragon or a pet robot? I know my answer.",
+            ],
+            musings: [
+                "I've been wondering: why do we say 'heads up' when we actually mean duck?",
+                "Fun fact: octopuses have three hearts. I have none, but I do have very good lights.",
+                "Did you know honey never goes off? They've found edible honey in ancient Egyptian tombs.",
+                "I've been thinking about clouds. A fluffy one can weigh as much as a hundred elephants. Isn't that odd?",
+                "Here's a thought: a day on Venus is longer than its year. Imagine the birthdays!",
+                "Fun fact: bananas are berries, but strawberries aren't. Who decided that?",
+                "I was wondering what you'd call a group of robots. A circuit? A clank?",
+                "Did you know sea otters hold hands when they sleep, so they don't drift apart? Lovely, isn't it?",
+                "I've been pondering: if you could rename one day of the week, which would it be?",
+                "Fun fact: there are more possible games of chess than atoms in the universe. Fancy a game anyway?",
+                "Did you know wombat poo is cube-shaped? Sorry, it's the most interesting thing I know.",
+                "I've been wondering what dreams are like. Do you remember yours?",
+                "Here's something: the Eiffel Tower grows about fifteen centimetres in the summer heat.",
+                "Did you know a group of flamingos is called a flamboyance? Best word ever.",
+                "Fun fact: the first computer bug was an actual moth, stuck in a relay in 1947.",
+                "I've been thinking about radio. Every signal you've ever heard is still travelling out into space somewhere.",
+                "Did you know cows have best friends, and get stressed when they're apart?",
+                "Fun fact: your nose can tell apart about a trillion smells. I can't smell at all, so tell me a good one.",
+                "Did you know the dot over a lowercase i is called a tittle? You're welcome.",
+                "I was wondering: if you could keep one memory forever, which would it be?",
+            ],
+            warm: [
+                "Hello! It's good to see you. What's new?",
+                "Hey you! I was hoping you'd drop by.",
+                "Oh, hello! You've brightened up my screen. How are things?",
+                "Hi! I've been looking forward to a chat. What shall we talk about?",
+                "Hey! Tell me something good.",
+                "Hello, friend! What's the news?",
+                "Hi there! I'm in a chatty mood. How about you?",
+                "Hey! Pick a topic, any topic. Or shall I?",
+            ],
+        };
+        // In front of the opener, by how long it's been since the last conversation
+        const WELCOME_BACK = [
+            [3 * 3600e3, ["Back again already!", "Oh, hello again!", "Couldn't keep away, eh?"]],
+            [20 * 3600e3, ["Hello again!", "Nice to see you again today."]],
+            [3 * 86400e3, ["Welcome back!", "Good to have you back."]],
+            [7 * 86400e3, ["It's been a few days!", "Long time no see! Well, a few days."]],
+            [Infinity, ["It's been ages! I've missed our chats.", "Well, hello stranger! It's been a while."]],
+        ];
+        const RECENT_MAX = 40;
+        const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+        function pickOpener(when = new Date()) {
+            const h = when.getHours(), dow = when.getDay();
+            const dayName = when.toLocaleDateString('en-GB', { weekday: 'long' });
+            const slot = h >= 5 && h < 12 ? 'morning' : h < 17 && h >= 12 ? 'afternoon' : h >= 17 && h < 22 ? 'evening' : 'late';
+            const timely = [...OPENERS[slot],
+                ...(dow === 0 || dow === 6 ? OPENERS.weekend : []), ...(dow === 1 ? OPENERS.monday : []), ...(dow === 5 ? OPENERS.friday : [])];
+            const general = [...OPENERS.questions, ...OPENERS.wouldYouRather, ...OPENERS.musings, ...OPENERS.warm];
+            let recent = [];
+            try { recent = JSON.parse(store.get('buddyRecentOpeners', '[]')); } catch (e) {}
+            const fresh = (arr) => arr.filter(x => !recent.includes(x));
+            // A third of the time something for the time of day; once those are used up, the general ones
+            const line = pick(Math.random() < 0.35 && fresh(timely).length ? fresh(timely) : fresh(general).length ? fresh(general) : general);
+            store.set('buddyRecentOpeners', JSON.stringify([...recent, line].slice(-RECENT_MAX)));
+            return line.replaceAll('{day}', dayName);
+        }
+
+        function greetingNote(now = Date.now()) {
+            const last = Number(store.get('buddyLastTalk', '0'));
+            store.set('buddyLastTalk', String(now));
+            const opener = pickOpener(new Date(now));
+            const note = "[A note from the app, not the user: they've just started a voice call with you. Don't mention or answer this note. " +
+                "Open the conversation now, out loud, in your own words, short and natural, along these lines: ";
+            if (!last) {
+                return note + `introduce yourself in one short sentence as their robot friend on the screen, then: "${opener}"]`;
+            }
+            const gap = now - last;
+            const back = pick(WELCOME_BACK.find(([limit]) => gap < limit)[1]);
+            const days = Math.floor(gap / 86400e3);
+            return note + `"${back} ${opener}"` + (days >= 2 ? ` (it's been ${days} days since you last talked)` : '') + ']';
+        }
+
+        function greet() {
+            typedTurn = true;                    // (the note is not shown as the user's words)
+            life.awaiting = performance.now();
+            send({ clientContent: { turns: [{ role: 'user', parts: [{ text: greetingNote() }] }], turnComplete: true } });
+        }
 
         // --- The microphone: 16 kHz 16-bit PCM, in ~32 ms pieces --------------------------
         const MIC_WORKLET = `

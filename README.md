@@ -33,6 +33,10 @@ do, look at it, and press **Look at me**.
 - **The face**: Gemini sets its expression with a `set_expression` tool (happy, excited, laughing,
   surprised, curious, thinking, sad, concerned, embarrassed, annoyed); when it doesn't, the face takes
   a cue from its words. Eyelids, LED brows, blush, mouth corners and colour all change with it.
+- **It starts the conversation**: a greeting picked from about 130 openers (for the time of day and the
+  day of the week, questions, would-you-rathers, odd facts), never one of the last 40, and a welcome back
+  that depends on how long it's been since you last talked. Gemini says it in its own words. Typing a
+  message to start skips it.
 - **Life**: natural blinks, eyes that look about (and follow the mouse), the head moving with the
   speech's emphasis, nods and glowing ears while you talk, a look up and away while it thinks.
 - **Lip sync** from the voice itself: loudness opens the jaw, the sound's colour shapes the lips.
