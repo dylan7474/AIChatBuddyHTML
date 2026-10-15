@@ -24,24 +24,37 @@ order it's worth doing.
 6. **Games and activities.** A quiz, 20 Questions, rounds of would-you-rather, and stories told with
    the face acting them out. Mostly instructions and a few expressions.
 
+## Your documents
+
+7. **Ask it about your documents.** A *Documents* panel: drop in PDFs, Word or text files; the text is
+   taken out in the browser and kept there, and goes into the robot's instructions at the start of each
+   conversation (the Live model holds about 128,000 tokens, so up to roughly 100 pages, leaving room for
+   the chat; in the instructions it can't be trimmed away in a long conversation). Then just ask: "what
+   does the manual say about resetting it?". The passage it used could show in the chat while it says
+   the gist.
+8. **A search tool, for big collections.** When there's more than fits, a `search_documents` tool (like
+   *look*): the page finds the most relevant passages (keywords, or Gemini embeddings for meaning) and
+   the robot answers from those. Scanned PDFs would need text recognition first. On the free tier the
+   text sent is used by Google, so keep private papers out.
+
 ## Hands-free, and on the desk
 
-7. **A greeting when you sit down.** The camera already sees you arrive; the robot could start the
+9. **A greeting when you sit down.** The camera already sees you arrive; the robot could start the
    conversation itself. Its own switch, with a cooldown, since it opens a connection by itself and,
    on the free tier, counts against the limits.
-8. **A desk companion.** An installable, full-screen version for a spare tablet, or a Pi with a small
+10. **A desk companion.** An installable, full-screen version for a spare tablet, or a Pi with a small
    screen, microphone and camera: a little robot that lives on the desk, with a quiet sleeping screen
    (a clock on the visor, say) between chats.
-9. **The Sleep Radio.** "Play Radio Tees on Nightingale", "what's on 20 metres?": tools that call the
+11. **The Sleep Radio.** "Play Radio Tees on Nightingale", "what's on 20 metres?": tools that call the
    radio's own API. The catch: this page is served over https, and browsers stop it from calling the
    radio's plain-http address, so it would have to be run locally, served by the radio itself, or reach
    the radio through Cloudflare.
 
 ## Housekeeping
 
-10. **Other browsers.** Firefox, Safari and phones: so far everything has been tried in Chrome only.
-11. **Memory backup.** Export and import the notes, so a new browser or computer doesn't start afresh.
-12. **The key.** A small server (a Cloudflare Worker, say) handing out short-lived keys, so the API key
+12. **Other browsers.** Firefox, Safari and phones: so far everything has been tried in Chrome only.
+13. **Memory backup.** Export and import the notes, so a new browser or computer doesn't start afresh.
+14. **The key.** A small server (a Cloudflare Worker, say) handing out short-lived keys, so the API key
     needn't sit in the browser if the page is ever shared.
 
 ## Later, maybe
