@@ -112,6 +112,9 @@
         <label class="flex items-center gap-2">Voice
             <select id="voice-select" class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-white"></select>
         </label>
+        <label class="flex items-center gap-2">Accent
+            <select id="accent-select" class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-white"></select>
+        </label>
         <label class="flex items-center gap-2" title="Off if the robot keeps cutting itself off (speakers too loud for the mic)">
             <input id="barge-in" type="checkbox" class="accent-blue-500"> Let me interrupt it
         </label>
@@ -120,7 +123,7 @@
         </label>
         <button id="memory-btn" class="bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1"><i class="fa-solid fa-brain mr-1"></i>What I remember</button>
         <button id="look-at-me" class="hidden bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1" title="Sit as you usually do and look at the robot, then press this">Look at me</button>
-        <span class="text-xs text-slate-500">A new voice is used from the next conversation. The camera picture never leaves this browser.</span>
+        <span class="text-xs text-slate-500">A new voice or accent is used from the next conversation. The camera picture never leaves this browser.</span>
     </div>
 
     <!-- Main Content Area -->
@@ -293,7 +296,27 @@
         const LIVE_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
         const IN_RATE = 16000;    // what the mic is sent at (16-bit PCM)
         const OUT_RATE = 24000;   // what the voice comes back at
-        const VOICES = ['Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede', 'Leda', 'Orus'];
+        // Gemini's 30 voices, with Google's own one-word descriptions
+        const VOICES = {
+            Zephyr: 'bright', Puck: 'upbeat', Charon: 'informative', Kore: 'firm', Fenrir: 'excitable', Leda: 'youthful',
+            Orus: 'firm', Aoede: 'breezy', Callirrhoe: 'easy-going', Autonoe: 'bright', Enceladus: 'breathy', Iapetus: 'clear',
+            Umbriel: 'easy-going', Algieba: 'smooth', Despina: 'smooth', Erinome: 'clear', Algenib: 'gravelly',
+            Rasalgethi: 'informative', Laomedeia: 'upbeat', Achernar: 'soft', Alnilam: 'firm', Schedar: 'even',
+            Gacrux: 'mature', Pulcherrima: 'forward', Achird: 'friendly', Zubenelgenubi: 'casual', Vindemiatrix: 'gentle',
+            Sadachbia: 'lively', Sadaltager: 'knowledgeable', Sulafat: 'warm',
+        };
+        // The live voices have no accent setting of their own, so it's asked for in the instructions
+        const ACCENTS = {
+            default: ['Default', ''],
+            british: ['British', "Speak English with a natural, warm British accent, as from southern England, and use British words, " +
+                "spellings and turns of phrase (mum, holiday, brilliant, cheers, fancy a cuppa), never American ones."],
+            australian: ['Australian', "Speak English with a natural Australian accent and relaxed Aussie expressions (g'day, no worries, " +
+                "arvo, reckon, heaps), friendly and easy-going, without overdoing it."],
+            scottish: ['Scottish', "Speak English with a gentle Scottish accent and the odd Scots word (wee, aye, braw, bonnie), " +
+                "warm and easy to understand."],
+            irish: ['Irish', "Speak English with a lilting Irish accent and Irish turns of phrase (grand, sure look, what's the craic), " +
+                "warm and easy to understand."],
+        };
         const EXPRESSIONS = ['neutral', 'happy', 'excited', 'laughing', 'surprised', 'curious', 'thinking', 'sad', 'concerned', 'embarrassed', 'annoyed'];
         const PERSONA = "You are Gemini, a friendly robot with an expressive face on a screen, chatting with the user by voice. " +
             "Keep it conversational, warm and snappy, like a fun friend on a phone call: usually one to three sentences. " +
@@ -330,8 +353,12 @@
         });
         $('key-btn').addEventListener('click', () => keyForm.classList.toggle('hidden'));
         $('settings-btn').addEventListener('click', () => settingsBar.classList.toggle('hidden'));
-        for (const v of VOICES) voiceSelect.add(new Option(v, v));
-        voiceSelect.value = store.get('buddyVoice', 'Zephyr');
+        for (const [v, about] of Object.entries(VOICES)) voiceSelect.add(new Option(`${v}: ${about}`, v));
+        voiceSelect.value = VOICES[store.get('buddyVoice', 'Zephyr')] ? store.get('buddyVoice', 'Zephyr') : 'Zephyr';
+        const accentSelect = $('accent-select');
+        for (const [k, [label]] of Object.entries(ACCENTS)) accentSelect.add(new Option(label, k));
+        accentSelect.value = ACCENTS[store.get('buddyAccent', 'default')] ? store.get('buddyAccent', 'default') : 'default';
+        accentSelect.addEventListener('change', () => store.set('buddyAccent', accentSelect.value));
         voiceSelect.addEventListener('change', () => store.set('buddyVoice', voiceSelect.value));
         bargeIn.checked = store.get('buddyBargeIn', '1') === '1';
         bargeIn.addEventListener('change', () => store.set('buddyBargeIn', bargeIn.checked ? '1' : '0'));
@@ -388,7 +415,8 @@
                     responseModalities: ['AUDIO'],
                     speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceSelect.value } } },
                 },
-                systemInstruction: { parts: [{ text: (toolMode < 2 ? PERSONA + LOOK_NOTE : PERSONA.replace(/ Your face shows.*$/, '')) + memoryForPrompt() }] },
+                systemInstruction: { parts: [{ text: (ACCENTS[accentSelect.value]?.[1] ? ACCENTS[accentSelect.value][1] + ' ' : '') +
+                    (toolMode < 2 ? PERSONA + LOOK_NOTE : PERSONA.replace(/ Your face shows.*$/, '')) + memoryForPrompt() }] },
                 inputAudioTranscription: {},
                 outputAudioTranscription: {},
                 realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } },

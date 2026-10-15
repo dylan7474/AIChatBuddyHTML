@@ -14,7 +14,7 @@ robot's face moves with what it says and how it feels.
 3. Press **Start conversation**, allow the microphone, and talk. **End conversation** hangs up.
    You can also type in the box under the chat.
 
-The sliders icon opens the settings: the **voice** (used from the next conversation) and **Let me
+The sliders icon opens the settings: the **voice** (all 30 of Gemini's, each with its character), an **accent** (British, Australian, Scottish or Irish, asked for in the robot's instructions; both used from the next conversation) and **Let me
 interrupt it**. Turn that off if the robot keeps cutting itself off: its own voice from loud speakers
 is reaching the microphone. Headphones avoid that altogether.
 
