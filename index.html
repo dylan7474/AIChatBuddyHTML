@@ -91,7 +91,7 @@
         <div class="flex items-center space-x-2">
             <i class="fa-solid fa-robot text-blue-400 text-xl"></i>
             <h1 class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">Gemini AI Buddy</h1>
-            <span id="version" class="text-xs text-slate-500" title="Build number: goes up with every commit, so you can tell which version GitHub is serving">v1.28</span>
+            <span id="version" class="text-xs text-slate-500" title="Build number: goes up with every commit, so you can tell which version GitHub is serving">v1.29</span>
         </div>
         <div class="flex items-center text-sm font-medium text-slate-300">
             <span id="status-indicator" class="status-dot status-idle"></span>
@@ -1151,6 +1151,7 @@
         // The tracker's "left" eye is the user's own left; the robot, facing them, winks on the same side of the screen.
         // (If it answers with the wrong eye, flip this.)
         const WINK_LEFT = -1;
+        const WINK_NEED_L = 0.035, WINK_NEED_R = 0.05;      // how much more shut one eye must read than the other, for the user's left and right
         let seeAt = 0;
         function showSeen(present, um) {          // called every frame; the page is touched ~8 times a second
             if (!seeOn.checked || !cam.running) return;
@@ -1603,7 +1604,9 @@
                 const l = cam.bs.blinkL, r = cam.bs.blinkR, d = Math.abs(l - r);
                 life.shut = [l, r];
                 const was = life.userWinkSince > 0;
-                if (Math.max(l, r) > 0.45 && d > (was ? 0.025 : 0.05)) winking = l > r ? WINK_LEFT : -WINK_LEFT;   // (easier to keep than to start)
+                // (easier to keep than to start; and easier for the user's left eye, whose wink the tracker pulls the other eye shut with more)
+                const need = (l > r ? WINK_NEED_L : WINK_NEED_R) * (was ? 0.5 : 1);
+                if (Math.max(l, r) > 0.45 && d > need) winking = l > r ? WINK_LEFT : -WINK_LEFT;
                 if (Math.max(l, r) > 0.35 && now - (life.winkLogAt || 0) > 250) {     // for tuning
                     life.winkLogAt = now;
                     dbg(`eyes shut L ${l.toFixed(2)} R ${r.toFixed(2)} diff ${d.toFixed(2)} -> ${winking ? 'wink' : 'not a wink'}${speaking ? ' (robot is speaking)' : ''}`);
