@@ -1106,6 +1106,8 @@
             pos: [0, 0],                // where it is, as a gaze (-1..1, the robot's own directions)
             raw: [0.5, 0.45], size: 0.25, smile: 0,
             bs: null,                   // the face's raw scores, smoothed
+            ext: {},                    // the lowest and highest of each eye reading since the camera started (or was reset)
+            hist: [],                   // the last ~9 s of the eyes' raw readings [t, earL, earR, blinkL, blinkR, squint]
             base: JSON.parse(store.get('buddyCamBase', 'null')),   // the same, at your resting face (set by "Look at me")
             centre: JSON.parse(store.get('buddyCamCentre', '[0.5,0.45]')),   // "Look at me": the face's spot when the robot looks straight at you
             arrived: 0, left: 0,        // when they last appeared / went
@@ -1116,7 +1118,34 @@
         const SEE = [['smile', 'Smile', '#fbbf24'], ['surprise', 'Surprise', '#e0f2fe'], ['sad', 'Sad', '#60a5fa'], ['annoyed', 'Annoyed', '#f87171'], ['tired', 'Tired', '#a78bfa']];
         seeBox.innerHTML = SEE.map(([m, label, c]) => `<div class="flex items-center gap-2 mb-1"><span class="w-14">${label}</span>` +
             `<span class="flex-1 h-2 bg-slate-800 rounded"><span id="see-${m}" class="block h-2 rounded" style="width:0;background:${c}"></span></span></div>`).join('') +
+            '<canvas id="see-graph" width="176" height="60" class="w-full mt-1 rounded bg-slate-950"></canvas>' +
+            '<div class="text-slate-500">outline L <b style="color:#fbbf24">amber</b> R <b style="color:#38bdf8">blue</b>; blink score dim</div>' +
+            '<button id="see-copy" class="pointer-events-auto mt-1 w-full rounded bg-slate-700 hover:bg-slate-600 py-0.5">Copy last 9 s of eye data</button>' +
+            '<div id="see-ext" class="pointer-events-auto text-slate-400 mt-1 cursor-pointer leading-tight" title="Click to reset"></div>' +
             '<div id="see-note" class="text-slate-500 mt-1"></div>';
+        const extText = () => ['L', 'R'].map(side => `${side}: outline ${cam.ext['ear' + side]?.map(v => v.toFixed(2)).join('-') ?? '-'}, blink ${cam.ext['blink' + side]?.map(v => v.toFixed(2)).join('-') ?? '-'}`).join('<br>');
+        $('see-ext').addEventListener('click', () => { cam.ext = {}; });
+        $('see-copy').addEventListener('click', () => {
+            const csv = '# lowest-highest since reset: ' + extText().replace(/<br>/g, ' | ') + '\nms,earL,earR,blinkL,blinkR,squint\n' + cam.hist.map(r => r.map((v, i) => i ? v.toFixed(3) : v).join(',')).join('\n');
+            navigator.clipboard.writeText(csv).then(() => { $('see-copy').innerText = 'Copied'; setTimeout(() => $('see-copy').innerText = 'Copy last 9 s of eye data', 1500); },
+                () => { console.log(csv); $('see-copy').innerText = 'Copy failed: see the console'; });
+        });
+        const graph = $('see-graph').getContext('2d');
+        function drawGraph() {
+            const h = cam.hist, W = 176, H = 60;
+            graph.clearRect(0, 0, W, H);
+            if (h.length < 2) return;
+            const t0 = h[0][0], span = Math.max(1, h[h.length - 1][0] - t0);
+            const line = (col, vals, alpha) => {
+                graph.strokeStyle = col; graph.globalAlpha = alpha; graph.lineWidth = 1.5; graph.beginPath();
+                vals.forEach((v, i) => { const x = (h[i][0] - t0) / span * W, y = H - 3 - v * (H - 6); i ? graph.lineTo(x, y) : graph.moveTo(x, y); });
+                graph.stroke();
+            };
+            const shut = (c) => { const m = Math.max(...h.map(r => r[c])) || 1; return h.map(r => clamp01(1 - r[c] / m)); };   // 0 open .. 1 shut, against the window's widest
+            line('#fbbf24', shut(1), 1); line('#38bdf8', shut(2), 1);
+            line('#fbbf24', h.map(r => clamp01(r[3])), 0.35); line('#38bdf8', h.map(r => clamp01(r[4])), 0.35);
+            graph.globalAlpha = 1;
+        }
         // The tracker's "left" eye is the user's own left; the robot, facing them, winks on the same side of the screen.
         // (If it answers with the wrong eye, flip this.)
         const WINK_LEFT = -1;
@@ -1127,6 +1156,8 @@
             if (now - seeAt < 120) return;
             seeAt = now;
             seeBox.classList.remove('hidden');
+            drawGraph();
+            $('see-ext').innerHTML = extText();
             for (const [m] of SEE) $('see-' + m).style.width = Math.round((present ? um[m] : 0) * 100) + '%';
             $('see-note').innerText = !present ? 'no face' : life.userWink ? 'a wink: your ' + (life.userWink === WINK_LEFT ? 'left' : 'right') + ' eye' : life.shut ? 'eyes shut L ' + Math.round(life.shut[0] * 100) + '% R ' + Math.round(life.shut[1] * 100) + '%' : '';
         }
@@ -1172,7 +1203,7 @@
             cam.stream?.getTracks().forEach(t => t.stop());
             cam.stream = null;
             video.srcObject = null;
-            cam.seen = 0; cam.smile = 0; cam.bs = null;
+            cam.seen = 0; cam.smile = 0; cam.bs = null; cam.hist = []; cam.ext = {};
             seeBox.classList.add('hidden');
             cameraIcon.classList.add('hidden');
             lookAtMe.classList.add('hidden');
@@ -1289,6 +1320,12 @@
             cam.pos = [Math.max(-1, Math.min(1, -(cam.raw[0] - cam.centre[0]) * 3.2)),
                        Math.max(-1, Math.min(1, (cam.raw[1] - cam.centre[1]) * 3.2))];
             cam.bs = cam.bs ? Object.fromEntries(Object.keys(face.bs).map(k => [k, lerp(cam.bs[k], face.bs[k], 0.5)])) : face.bs;
+            cam.hist.push([Math.round(now), face.bs.earL, face.bs.earR, face.bs.blinkL, face.bs.blinkR, face.bs.squint]);   // (raw, for the wink graph)
+            if (cam.hist.length > 140) cam.hist.shift();
+            for (const [k, v] of [['earL', face.bs.earL], ['earR', face.bs.earR], ['blinkL', face.bs.blinkL], ['blinkR', face.bs.blinkR]]) {   // the extremes seen
+                const e = cam.ext[k] || (cam.ext[k] = [v, v]);
+                e[0] = Math.min(e[0], v); e[1] = Math.max(e[1], v);
+            }
             cam.moods = moodsOf(cam.bs, cam.base);
             cam.smile = cam.moods.smile;
             if (!cam.seen || now - cam.seen > 3000) cam.arrived = now;               // they've (re)appeared
