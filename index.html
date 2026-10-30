@@ -91,6 +91,7 @@
         <div class="flex items-center space-x-2">
             <i class="fa-solid fa-robot text-blue-400 text-xl"></i>
             <h1 class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">Gemini AI Buddy</h1>
+            <span id="version" class="text-xs text-slate-500" title="Build number: goes up with every commit, so you can tell which version GitHub is serving">v1.27</span>
         </div>
         <div class="flex items-center text-sm font-medium text-slate-300">
             <span id="status-indicator" class="status-dot status-idle"></span>
@@ -815,6 +816,7 @@
 
         // Logging for the console (F12): every step of starting the mic, and what the browser can see
         const dbg = (...a) => console.log('[buddy]', ...a);
+        dbg('version', $('version').innerText);
         async function startMic() {
             dbg('mic: page', location.href, 'secure context:', window.isSecureContext);
             try {
