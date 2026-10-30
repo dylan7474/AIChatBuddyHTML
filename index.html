@@ -1128,7 +1128,7 @@
             seeAt = now;
             seeBox.classList.remove('hidden');
             for (const [m] of SEE) $('see-' + m).style.width = Math.round((present ? um[m] : 0) * 100) + '%';
-            $('see-note').innerText = !present ? 'no face' : life.userWink ? 'a wink: your ' + (life.userWink === WINK_LEFT ? 'left' : 'right') + ' eye' : 'eyes L ' + cam.bs.blinkL.toFixed(2) + ' R ' + cam.bs.blinkR.toFixed(2) + (cam.base ? '' : ' (press "Look at me" first)');
+            $('see-note').innerText = !present ? 'no face' : life.userWink ? 'a wink: your ' + (life.userWink === WINK_LEFT ? 'left' : 'right') + ' eye' : life.shut ? 'eyes shut L ' + Math.round(life.shut[0] * 100) + '% R ' + Math.round(life.shut[1] * 100) + '%' : '';
         }
         cameraOn.checked = store.get('buddyCamera', '0') === '1';
         cameraOn.addEventListener('change', () => {
@@ -1187,8 +1187,15 @@
             for (const q of pts) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
             const bs = (r.faceBlendshapes && r.faceBlendshapes[0] && r.faceBlendshapes[0].categories) || [];
             const score = (n) => (bs.find(c => c.categoryName === n) || { score: 0 }).score;
+            // How open each eye is, from its outline: the lids' gap over the eye's width (the subject's own left and right)
+            const gap = (a, b, ups, lows) => {
+                const d = (i, j) => Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y);
+                return ups.reduce((t, u, k) => t + d(u, lows[k]), 0) / ups.length / (d(a, b) || 1);
+            };
+            const earL = gap(362, 263, [385, 386, 387], [380, 374, 373]), earR = gap(33, 133, [158, 159, 160], [153, 145, 144]);
             const pair = (n) => (score(n + 'Left') + score(n + 'Right')) / 2;
             return { box: [x0, x1, y0, y1], bs: {
+                earL, earR,
                 smile: pair('mouthSmile'), squint: pair('eyeSquint'), cheek: pair('cheekSquint'), frown: pair('mouthFrown'),
                 press: pair('mouthPress'), browDown: pair('browDown'), browInner: score('browInnerUp'), browOuter: pair('browOuterUp'),
                 eyeWide: pair('eyeWide'), blink: pair('eyeBlink'), blinkL: score('eyeBlinkLeft'), blinkR: score('eyeBlinkRight'), jaw: score('jawOpen'), sneer: pair('noseSneer'),
@@ -1549,11 +1556,26 @@
                 if (um[m] > from && um[m] - from > echoK) { echo = to; echoK = um[m] - from; echoK = Math.min(echoK / span, 1); }
             }
             // The user winks: one eye shut (the other open) for a moment; it winks back, with the same side of the screen
+            // Winks, from the outline of each eye (the tracker's own blink scores are too noisy). How shut each eye is
+            // is measured against how open it has been lately (a reference that rises at once and fades over ~15 s).
             const bsn = present && cam.bs;
-            const winking = bsn ? (cam.bs.blinkL > 0.45 && cam.bs.blinkL - cam.bs.blinkR > 0.3 ? WINK_LEFT : cam.bs.blinkR > 0.45 && cam.bs.blinkR - cam.bs.blinkL > 0.3 ? -WINK_LEFT : 0) : 0;
-            if (!winking) life.userWinkSince = 0;
-            else if (!life.userWinkSince) life.userWinkSince = now;
-            life.userWink = winking && now - life.userWinkSince > 120 ? winking : 0;       // (a blink or two never gets this far)
+            let winking = 0;
+            if (bsn) {
+                const ref = life.earRef || (life.earRef = [cam.bs.earL, cam.bs.earR]);
+                [cam.bs.earL, cam.bs.earR].forEach((v, i) => { ref[i] = v > ref[i] ? v : lerp(ref[i], v, ease(15)); });
+                life.shut = [clamp01(1 - cam.bs.earL / ref[0]), clamp01(1 - cam.bs.earR / ref[1])];
+                const [l, r] = life.shut;
+                if (now - cam.arrived > 1500)                                      // (give the reference a moment to settle)
+                    winking = l > 0.4 && l - r > 0.25 ? WINK_LEFT : r > 0.4 && r - l > 0.25 ? -WINK_LEFT : 0;
+                if (Math.max(l, r) > 0.3 && now - (life.winkLogAt || 0) > 250) {     // for tuning
+                    life.winkLogAt = now;
+                    dbg(`eyes shut L ${l.toFixed(2)} R ${r.toFixed(2)} -> ${winking ? 'wink' : 'not a wink'}${speaking ? ' (robot is speaking)' : ''}`);
+                }
+            } else life.shut = null;
+            if (winking) { life.winkLost = 0; if (!life.userWinkSince) life.userWinkSince = now; }
+            else if (life.userWinkSince && !life.winkLost) life.winkLost = now;
+            else if (life.winkLost && now - life.winkLost > 150) { life.userWinkSince = 0; life.winkLost = 0; }   // (a dropped frame doesn't end it)
+            life.userWink = life.userWinkSince && now - life.userWinkSince > 120 ? (winking || life.userWink) : 0;       // (a blink or two never gets this far)
             if (life.userWink && !speaking && now - life.lastWinkBack > 4000 && now - life.winkT > 1500) {
                 life.lastWinkBack = now; life.winkSide = life.userWink;
                 setExpression('wink', 0.9, 'user');
