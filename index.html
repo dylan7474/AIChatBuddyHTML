@@ -325,12 +325,12 @@
             irish: ['Irish', "Speak English with a lilting Irish accent and Irish turns of phrase (grand, sure look, what's the craic), " +
                 "warm and easy to understand."],
         };
-        const EXPRESSIONS = ['neutral', 'happy', 'excited', 'laughing', 'surprised', 'curious', 'thinking', 'sad', 'concerned', 'embarrassed', 'annoyed'];
+        const EXPRESSIONS = ['neutral', 'happy', 'excited', 'laughing', 'surprised', 'curious', 'thinking', 'sad', 'concerned', 'embarrassed', 'annoyed', 'wink'];
         const PERSONA = "You are Gemini, a friendly robot with an expressive face on a screen, chatting with the user by voice. " +
             "Keep it conversational, warm and snappy, like a fun friend on a phone call: usually one to three sentences. " +
             "Your face shows how you feel: call set_expression whenever your mood changes, just before you say the thing that changes it " +
             "(happy when pleased, laughing at something funny, surprised, curious, thinking while you work something out, sad or concerned at bad news, " +
-            "embarrassed, annoyed, excited). Never mention the function or your expressions out loud.";
+            "embarrassed, annoyed, excited, and a wink when you share a joke or tease them playfully). Never mention the function or your expressions out loud.";
         const LOOK_NOTE = " You can see through the user's camera with the look tool: use it when they ask you to look at something, " +
             "show you something, or ask how they look, then talk about what you see. Don't use it otherwise.";
         const SUMMARY_MODEL = 'gemini-3.8-flash';   // keeps the notes about the user, after each conversation
@@ -395,7 +395,8 @@
                 resumeHandle = null;
                 openSocket();
             } catch (err) {
-                showError(err.name === 'NotAllowedError' ? 'The page needs your microphone.' : 'Microphone: ' + err.message);
+                console.error('[buddy] start failed:', err);
+                showError((err.name === 'NotAllowedError' ? 'The page needs your microphone.' : 'Microphone: ' + err.message) + ' [' + err.name + ']');
                 endConversation();
             } finally {
                 talkBtn.disabled = false;
@@ -812,12 +813,28 @@
             }
             registerProcessor('mic', Mic);`;
 
+        // Logging for the console (F12): every step of starting the mic, and what the browser can see
+        const dbg = (...a) => console.log('[buddy]', ...a);
         async function startMic() {
+            dbg('mic: page', location.href, 'secure context:', window.isSecureContext);
+            try {
+                const devs = await navigator.mediaDevices.enumerateDevices();
+                dbg('mic: devices', devs.map(d => `${d.kind}: ${d.label || '(no label)'}`));
+                dbg('mic: permission', (await navigator.permissions.query({ name: 'microphone' })).state);
+            } catch (e) { dbg('mic: could not list devices:', e.name, e.message); }
+            dbg('mic: asking for the microphone');
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
             });
+            dbg('mic: got it', stream.getAudioTracks().map(t => `${t.label} (${t.readyState})`));
             const ctx = new (window.AudioContext || window.webkitAudioContext)();
-            await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([MIC_WORKLET], { type: 'application/javascript' })));
+            dbg('mic: audio context', ctx.state, ctx.sampleRate + ' Hz');
+            try { await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([MIC_WORKLET], { type: 'application/javascript' }))); }
+            catch (e) {                                  // (a page opened from a file has a null origin, which refuses blob: modules)
+                dbg('mic: blob worklet refused (' + e.message + '), trying a data: one');
+                await ctx.audioWorklet.addModule('data:application/javascript;base64,' + btoa(MIC_WORKLET));
+            }
+            dbg('mic: worklet loaded');
             const src = ctx.createMediaStreamSource(stream);
             const node = new AudioWorkletNode(ctx, 'mic');
             src.connect(node);
@@ -1035,6 +1052,7 @@
             sad:         { brow: [1, -12, 0], lidUp: 0.42, lidTilt: -0.25, smile: -0.7, pupil: 1.1, color: '#60a5fa', tilt: -3, droop: 1 },
             concerned:   { brow: [1, -8, 0], lidUp: 0.25, lidTilt: -0.15, smile: -0.3, color: '#a5b4fc' },
             embarrassed: { brow: [0, -4, 0], lidUp: 0.4, smile: 0.3, cheek: 0.85, color: '#fb7185', away: 1 },
+            wink:        { brow: [2, 0, -2], lidLow: 0.2, smile: 0.85, cheek: 0.3, color: '#fbbf24', tilt: 3 },   // (the wink itself: see life.winkT)
             sleepy:      { brow: [-1, -3, 0], lidUp: 0.62, smile: 0.05, pupil: 0.9, color: '#2b6c8c', droop: 0.7 },
             annoyed:     { brow: [-3, 12, 0], lidUp: 0.45, lidTilt: 0.3, smile: -0.4, color: '#f87171' },
         };
@@ -1052,7 +1070,9 @@
         function setExpression(name, intensity, from) {
             if (!EXPR[name]) return;
             const k = Math.min(1, Math.max(0.3, Number(intensity) || 0.8));
-            expr = { name, k, from, until: performance.now() + (from === 'model' ? 9000 : 3500) };
+            const now = performance.now();
+            if (name === 'wink') { life.winkT = now; life.winkSide = from === 'user' ? life.winkSide : 1; }   // (its right eye, unless it's answering a wink)
+            expr = { name, k, from, until: now + (name === 'wink' ? 1400 : from === 'model' ? 9000 : 3500) };
         }
         // When the model doesn't set its face, take a cue from what it says
         function expressionFromWords(text) {
@@ -1097,6 +1117,9 @@
         seeBox.innerHTML = SEE.map(([m, label, c]) => `<div class="flex items-center gap-2 mb-1"><span class="w-14">${label}</span>` +
             `<span class="flex-1 h-2 bg-slate-800 rounded"><span id="see-${m}" class="block h-2 rounded" style="width:0;background:${c}"></span></span></div>`).join('') +
             '<div id="see-note" class="text-slate-500 mt-1"></div>';
+        // The tracker's "left" eye is the user's own left; the robot, facing them, winks on the same side of the screen.
+        // (If it answers with the wrong eye, flip this.)
+        const WINK_LEFT = -1;
         let seeAt = 0;
         function showSeen(present, um) {          // called every frame; the page is touched ~8 times a second
             if (!seeOn.checked || !cam.running) return;
@@ -1105,7 +1128,7 @@
             seeAt = now;
             seeBox.classList.remove('hidden');
             for (const [m] of SEE) $('see-' + m).style.width = Math.round((present ? um[m] : 0) * 100) + '%';
-            $('see-note').innerText = !present ? 'no face' : cam.base ? 'from your resting face' : 'press "Look at me" to set your resting face';
+            $('see-note').innerText = !present ? 'no face' : life.userWink ? 'a wink: your ' + (life.userWink === WINK_LEFT ? 'left' : 'right') + ' eye' : 'eyes L ' + cam.bs.blinkL.toFixed(2) + ' R ' + cam.bs.blinkR.toFixed(2) + (cam.base ? '' : ' (press "Look at me" first)');
         }
         cameraOn.checked = store.get('buddyCamera', '0') === '1';
         cameraOn.addEventListener('change', () => {
@@ -1168,7 +1191,7 @@
             return { box: [x0, x1, y0, y1], bs: {
                 smile: pair('mouthSmile'), squint: pair('eyeSquint'), cheek: pair('cheekSquint'), frown: pair('mouthFrown'),
                 press: pair('mouthPress'), browDown: pair('browDown'), browInner: score('browInnerUp'), browOuter: pair('browOuterUp'),
-                eyeWide: pair('eyeWide'), blink: pair('eyeBlink'), jaw: score('jawOpen'), sneer: pair('noseSneer'),
+                eyeWide: pair('eyeWide'), blink: pair('eyeBlink'), blinkL: score('eyeBlinkLeft'), blinkR: score('eyeBlinkRight'), jaw: score('jawOpen'), sneer: pair('noseSneer'),
             } };
         }
         // From the raw scores to moods, 0..1 each, measured from the resting face when there is one.
@@ -1421,6 +1444,8 @@
             mouse: [0, 0], mouseAt: -1e9,
             head: [0, 0, 0], env: 0, envSlow: 0, nod: 0, nodT: -1,
             face: null,                 // the current (smoothed) expression values
+            winkT: -1e9, winkSide: 1,   // when the last wink began, and which eye (-1 the screen's left, 1 its right)
+            userWink: 0, lastWinkBack: 0, lastWinkNote: 0,
         };
         document.addEventListener('mousemove', (e) => {
             const r = $('avatar-svg').getBoundingClientRect();
@@ -1523,6 +1548,21 @@
             for (const [m, to, from, span] of [['surprise', 'surprised', 0.4, 0.4], ['sad', 'concerned', 0.4, 0.4], ['annoyed', 'concerned', 0.45, 0.4]]) {
                 if (um[m] > from && um[m] - from > echoK) { echo = to; echoK = um[m] - from; echoK = Math.min(echoK / span, 1); }
             }
+            // The user winks: one eye shut (the other open) for a moment; it winks back, with the same side of the screen
+            const bsn = present && cam.bs;
+            const winking = bsn ? (cam.bs.blinkL > 0.45 && cam.bs.blinkL - cam.bs.blinkR > 0.3 ? WINK_LEFT : cam.bs.blinkR > 0.45 && cam.bs.blinkR - cam.bs.blinkL > 0.3 ? -WINK_LEFT : 0) : 0;
+            if (!winking) life.userWinkSince = 0;
+            else if (!life.userWinkSince) life.userWinkSince = now;
+            life.userWink = winking && now - life.userWinkSince > 120 ? winking : 0;       // (a blink or two never gets this far)
+            if (life.userWink && !speaking && now - life.lastWinkBack > 4000 && now - life.winkT > 1500) {
+                life.lastWinkBack = now; life.winkSide = life.userWink;
+                setExpression('wink', 0.9, 'user');
+                if (now - life.lastWinkNote > 10000 && talk?.ready) {                  // and Gemini is told, so it can say something
+                    life.lastWinkNote = now; typedTurn = true; life.awaiting = now;
+                    send({ clientContent: { turns: [{ role: 'user', parts: [{ text:
+                        "[The camera just saw the user wink at you, and you winked back. React playfully in a few words, in character; don't explain how you know.]" }] }], turnComplete: true } });
+                }
+            }
             showSeen(present, um);
 
             // The expression: the model's (or the words'), then the mood's own, then neutral;
@@ -1612,7 +1652,12 @@
                 p.style.transform = `${pupil} scale(${(f.pupil + near).toFixed(3)})`;
             }
             const close = Math.max(f.lidUp, blink), low = f.lidLow * (1 - blink * 0.5);
-            const [lu, ll] = lidPaths(EYE.l, close, f.lidTilt, low), [ru, rl] = lidPaths(EYE.r, close, f.lidTilt, low);
+            // A wink: one eye shuts quickly, holds a moment, and opens (800 ms)
+            const wt = (now - life.winkT) / 800;
+            const wink = wt < 0 || wt > 1 ? 0 : wt < 0.2 ? wt / 0.2 : wt < 0.65 ? 1 : 1 - (wt - 0.65) / 0.35;
+            const wl = life.winkSide < 0 ? wink : 0, wr = life.winkSide > 0 ? wink : 0;
+            const [lu, ll] = lidPaths(EYE.l, Math.max(close, wl), f.lidTilt, Math.max(low, wl * 0.45));
+            const [ru, rl] = lidPaths(EYE.r, Math.max(close, wr), f.lidTilt, Math.max(low, wr * 0.45));
             el.lidLU.setAttribute('d', lu); el.lidLL.setAttribute('d', ll);
             el.lidRU.setAttribute('d', ru); el.lidRL.setAttribute('d', rl);
             const [lift, tilt, asym] = f.brow;
