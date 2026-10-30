@@ -121,6 +121,9 @@
         <label class="flex items-center gap-2" title="It turns to look at you, notices when you come and go, and smiles back. The picture stays in this browser.">
             <input id="camera-on" type="checkbox" class="accent-blue-500"> Watch me with the camera
         </label>
+        <label id="see-label" class="hidden flex items-center gap-2" title="Shows what the camera reads from your face, so the robot's mirroring can be tuned">
+            <input id="see-on" type="checkbox" class="accent-blue-500"> Show what it sees
+        </label>
         <button id="memory-btn" class="bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1"><i class="fa-solid fa-brain mr-1"></i>What I remember</button>
         <button id="look-at-me" class="hidden bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1" title="Sit as you usually do and look at the robot, then press this">Look at me</button>
         <span class="text-xs text-slate-500">A new voice or accent is used from the next conversation. The camera picture never leaves this browser.</span>
@@ -261,6 +264,7 @@
 
     </main>
 
+    <div id="see-box" class="hidden fixed bottom-3 left-3 z-20 w-44 rounded-lg bg-slate-900/90 border border-slate-700 p-2 text-xs text-slate-300 pointer-events-none"></div>
     <video id="camera-video" class="hidden" muted playsinline></video>
 
     <!-- What the robot remembers about the user -->
@@ -1081,9 +1085,28 @@
             seen: 0,                    // performance.now() the face was last seen
             pos: [0, 0],                // where it is, as a gaze (-1..1, the robot's own directions)
             raw: [0.5, 0.45], size: 0.25, smile: 0,
+            bs: null,                   // the face's raw scores, smoothed
+            base: JSON.parse(store.get('buddyCamBase', 'null')),   // the same, at your resting face (set by "Look at me")
             centre: JSON.parse(store.get('buddyCamCentre', '[0.5,0.45]')),   // "Look at me": the face's spot when the robot looks straight at you
             arrived: 0, left: 0,        // when they last appeared / went
         };
+        const seeBox = $('see-box'), seeOn = $('see-on'), seeLabel = $('see-label');
+        seeOn.checked = store.get('buddySee', '0') === '1';
+        seeOn.addEventListener('change', () => { store.set('buddySee', seeOn.checked ? '1' : '0'); if (!seeOn.checked) seeBox.classList.add('hidden'); });
+        const SEE = [['smile', 'Smile', '#fbbf24'], ['surprise', 'Surprise', '#e0f2fe'], ['sad', 'Sad', '#60a5fa'], ['annoyed', 'Annoyed', '#f87171'], ['tired', 'Tired', '#a78bfa']];
+        seeBox.innerHTML = SEE.map(([m, label, c]) => `<div class="flex items-center gap-2 mb-1"><span class="w-14">${label}</span>` +
+            `<span class="flex-1 h-2 bg-slate-800 rounded"><span id="see-${m}" class="block h-2 rounded" style="width:0;background:${c}"></span></span></div>`).join('') +
+            '<div id="see-note" class="text-slate-500 mt-1"></div>';
+        let seeAt = 0;
+        function showSeen(present, um) {          // called every frame; the page is touched ~8 times a second
+            if (!seeOn.checked || !cam.running) return;
+            const now = performance.now();
+            if (now - seeAt < 120) return;
+            seeAt = now;
+            seeBox.classList.remove('hidden');
+            for (const [m] of SEE) $('see-' + m).style.width = Math.round((present ? um[m] : 0) * 100) + '%';
+            $('see-note').innerText = !present ? 'no face' : cam.base ? 'from your resting face' : 'press "Look at me" to set your resting face';
+        }
         cameraOn.checked = store.get('buddyCamera', '0') === '1';
         cameraOn.addEventListener('change', () => {
             store.set('buddyCamera', cameraOn.checked ? '1' : '0');
@@ -1093,6 +1116,8 @@
             if (performance.now() - cam.seen > 500) return showError("I can't see your face just now.");
             cam.centre = cam.raw.slice();
             store.set('buddyCamCentre', JSON.stringify(cam.centre));
+            cam.base = cam.bs ? { ...cam.bs } : null;                      // your resting face, to measure changes from
+            store.set('buddyCamBase', JSON.stringify(cam.base));
             setExpression('happy', 0.6, 'notice');
         });
 
@@ -1108,6 +1133,7 @@
                 if (!cam.running) return stopCamera();
                 cameraIcon.classList.remove('hidden');
                 lookAtMe.classList.remove('hidden');
+                seeLabel.classList.remove('hidden');
                 cam.left = performance.now();
                 cam.timer = setInterval(watch, 66);
             } catch (err) {
@@ -1123,9 +1149,11 @@
             cam.stream?.getTracks().forEach(t => t.stop());
             cam.stream = null;
             video.srcObject = null;
-            cam.seen = 0; cam.smile = 0;
+            cam.seen = 0; cam.smile = 0; cam.bs = null;
+            seeBox.classList.add('hidden');
             cameraIcon.classList.add('hidden');
             lookAtMe.classList.add('hidden');
+            seeLabel.classList.add('hidden');
         }
         // Where the face is (its box, 0..1 of the picture) and how much it smiles, from the landmarker's result.
         // (Also run inside the worker: it's copied there as source.)
@@ -1136,7 +1164,26 @@
             for (const q of pts) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
             const bs = (r.faceBlendshapes && r.faceBlendshapes[0] && r.faceBlendshapes[0].categories) || [];
             const score = (n) => (bs.find(c => c.categoryName === n) || { score: 0 }).score;
-            return { box: [x0, x1, y0, y1], smile: (score('mouthSmileLeft') + score('mouthSmileRight')) / 2 };
+            const pair = (n) => (score(n + 'Left') + score(n + 'Right')) / 2;
+            return { box: [x0, x1, y0, y1], bs: {
+                smile: pair('mouthSmile'), squint: pair('eyeSquint'), cheek: pair('cheekSquint'), frown: pair('mouthFrown'),
+                press: pair('mouthPress'), browDown: pair('browDown'), browInner: score('browInnerUp'), browOuter: pair('browOuterUp'),
+                eyeWide: pair('eyeWide'), blink: pair('eyeBlink'), jaw: score('jawOpen'), sneer: pair('noseSneer'),
+            } };
+        }
+        // From the raw scores to moods, 0..1 each, measured from the resting face when there is one.
+        // A real smile also squints the eyes and lifts the cheeks; talking opens the jaw and moves the mouth corners.
+        function moodsOf(b, base) {
+            const d = (k) => Math.max(0, b[k] - (base ? base[k] : 0) * 0.9);
+            const talking = clamp01((b.jaw - 0.25) / 0.4);
+            const eyes = clamp01((d('squint') + d('cheek')) * 1.4);
+            return {
+                smile: clamp01(d('smile') * 1.6 * (0.55 + 0.45 * eyes) * (1 - 0.5 * talking)),
+                surprise: clamp01((d('browInner') + d('browOuter') + d('eyeWide')) * 0.9 * (b.jaw > 0.15 ? 1 : 0.8)),
+                sad: clamp01(d('frown') * 1.5 + d('browInner') * 0.6 - d('smile')),
+                annoyed: clamp01((d('browDown') * 1.1 + d('sneer') * 1.2 + d('press') * 0.7) - d('smile')),
+                tired: clamp01(b.blink * 1.1 - 0.15),
+            };
         }
         // The tracker runs in a worker, so loading it (a few seconds' work) and each look at the picture never
         // hold up the page; where workers can't run it, on the page itself.
@@ -1211,7 +1258,9 @@
             // facing them, turns to its right -- which is the screen's left, as with the mouse
             cam.pos = [Math.max(-1, Math.min(1, -(cam.raw[0] - cam.centre[0]) * 3.2)),
                        Math.max(-1, Math.min(1, (cam.raw[1] - cam.centre[1]) * 3.2))];
-            cam.smile = face.smile;
+            cam.bs = cam.bs ? Object.fromEntries(Object.keys(face.bs).map(k => [k, lerp(cam.bs[k], face.bs[k], 0.5)])) : face.bs;
+            cam.moods = moodsOf(cam.bs, cam.base);
+            cam.smile = cam.moods.smile;
             if (!cam.seen || now - cam.seen > 3000) cam.arrived = now;               // they've (re)appeared
             cam.seen = now;
             cameraIcon.classList.replace('text-slate-500', 'text-emerald-400');
@@ -1467,13 +1516,22 @@
                 if (!speaking) setExpression('happy', 0.55, 'notice');
             }
             life.userSmile = lerp(life.userSmile || 0, present ? cam.smile : 0, ease(0.35));   // (a beat behind, as people are)
+            const um = life.userMoods || (life.userMoods = { smile: 0, surprise: 0, sad: 0, annoyed: 0, tired: 0 });
+            for (const m in um) um[m] = lerp(um[m], present && cam.moods ? cam.moods[m] : 0, ease(m === 'smile' ? 0.35 : 0.5));
+            // the strongest of the moods that can be mirrored (an annoyed user gets a concerned robot, not an annoyed one)
+            let echo = null, echoK = 0;
+            for (const [m, to, from, span] of [['surprise', 'surprised', 0.4, 0.4], ['sad', 'concerned', 0.4, 0.4], ['annoyed', 'concerned', 0.45, 0.4]]) {
+                if (um[m] > from && um[m] - from > echoK) { echo = to; echoK = um[m] - from; echoK = Math.min(echoK / span, 1); }
+            }
+            showSeen(present, um);
 
             // The expression: the model's (or the words'), then the mood's own, then neutral;
             // a smile back when the user smiles at it, and dozing off when it's been left alone
             let name = 'neutral', k = 1;
             if (now < expr.until || (expr.from === 'model' && speaking)) { name = expr.name; k = expr.k; }
             else if (mood === 'thinking') { name = 'thinking'; k = 0.7; }
-            else if (life.userSmile > 0.35) { name = 'happy'; k = 0.3 + clamp01((life.userSmile - 0.35) / 0.4) * 0.6; }
+            else if (life.userSmile > 0.3) { name = 'happy'; k = 0.3 + clamp01((life.userSmile - 0.3) / 0.4) * 0.6; }
+            else if (echo) { name = echo; k = 0.25 + echoK * 0.35; }           // a softened echo of their face
             else if (mood === 'hearing' || mood === 'listening') { name = 'curious'; k = 0.25; }
             else if (mood === 'off' && away > 20000) { name = 'sleepy'; k = 1; }
             const target = exprTargets(name, k);
